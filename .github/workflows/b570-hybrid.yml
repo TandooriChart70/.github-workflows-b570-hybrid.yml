@@ -43,7 +43,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Could not fetch rendering fix PR 614.' }
           # Exact source commits: WaitIfEqual64 then PR #614's 11 commits, oldest first.
           $patches = @(
-            'e736dfde9e',
+            'b6706b0',
             '41e7291', '245d902', '2d29137', '502e6e2',
             'f918505', '8424eeb', '01783ce', 'a6dea8a',
             'dc3e912', '8de2d42', 'b536a97'
