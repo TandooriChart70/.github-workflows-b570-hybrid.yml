@@ -1,3 +1,4 @@
+
 name: B570 Hybrid - fast Eglantine plus OOT rendering fix
 
 on:
@@ -11,8 +12,10 @@ jobs:
     name: Build hybrid Windows x64 (experimental)
     runs-on: windows-2022
     timeout-minutes: 180
+
     env:
       PLATFORM: windows-x86_64
+
     steps:
       - name: Check out upstream Eglantine source
         uses: actions/checkout@v4
@@ -22,58 +25,95 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Apply startup and rendering fixes to exact fast-build source
+      - name: Apply OOT rendering fixes to fast baseline
         id: hybrid
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
           git config user.name 'B570 Hybrid Test Builder'
           git config user.email 'b570-hybrid-test@users.noreply.github.com'
           git config core.longpaths true
-          # 70fa082312 is the exact source commit behind the user's fast
-          # branch-switchbrew-names-736c1d29 release (not the release tag hash).
+
+          Write-Host 'Checking out original fast Eglantine source...'
           git checkout --detach 70fa082312
-          if ($LASTEXITCODE -ne 0) { throw 'Fast baseline commit 70fa082312 cannot be checked out.' }
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Fast baseline commit could not be checked out.'
+          }
+
           git switch -c b570-fast-base-with-oot-fixes
-          if ($LASTEXITCODE -ne 0) { throw 'Could not create integration branch.' }
-          # Fetch PR heads by GitHub pull-request ref: no temporary release URLs.
-          git fetch origin '+refs/pull/567/head:refs/remotes/origin/oot-wait64'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch startup fix PR 567.' }
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not create hybrid branch.'
+          }
+
+          Write-Host 'Fetching OOT rendering fixes...'
           git fetch origin '+refs/pull/614/head:refs/remotes/origin/oot-rendering'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch rendering fix PR 614.' }
-          # Exact source commits: WaitIfEqual64 then PR #614's 11 commits, oldest first.
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not fetch rendering fix PR 614.'
+          }
+
+          # Eleven rendering commits, oldest first.
+          # Redundant patches are dropped automatically.
           $patches = @(
-            'b6706b0',
-            '41e7291', '245d902', '2d29137', '502e6e2',
-            'f918505', '8424eeb', '01783ce', 'a6dea8a',
-            'dc3e912', '8de2d42', 'b536a97'
+            '41e7291',
+            '245d902',
+            '2d29137',
+            '502e6e2',
+            'f918505',
+            '8424eeb',
+            '01783ce',
+            'a6dea8a',
+            'dc3e912',
+            '8de2d42',
+            'b536a97'
           )
+
           foreach ($sha in $patches) {
-            Write-Host "Applying $sha..."
-            git cherry-pick -x $sha
+            Write-Host "Applying rendering patch $sha..."
+
+            git cherry-pick -x --empty=drop $sha
+
             if ($LASTEXITCODE -ne 0) {
-              git status --short | Out-File -Encoding utf8 integration-conflicts.txt
-              git diff --name-only --diff-filter=U | Out-File -Append -Encoding utf8 integration-conflicts.txt
-              throw "Source integration conflict at $sha. This is NOT a successful hybrid; see the build log."
+              Write-Host "Patch conflict at $sha" -ForegroundColor Red
+
+              git status --short |
+                Out-File -Encoding utf8 integration-conflicts.txt
+
+              git diff --name-only --diff-filter=U |
+                Out-File -Append -Encoding utf8 integration-conflicts.txt
+
+              throw "Integration failed at patch $sha. Check build log."
             }
           }
+
           $rev = (git rev-parse HEAD).Trim()
-          "sha=$rev" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          "sha=$rev" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
           @(
-            'Eglantine B570 SOURCE HYBRID - EXPERIMENTAL, NOT GAMEPLAY VERIFIED',
-            'Fast baseline: Djihads80/Eglantine@70fa082312',
-            'Startup patch: e736dfde9e (PR #567)',
-            'Rendering patchset: PR #614, all 11 commits',
-            "Built source HEAD: $rev",
-            'Compiler target: MSVC / Windows x64',
-            'No proprietary firmware, game ROMs, keys or saves included',
-            '',
+            'EGLANTINE B570 HYBRID - EXPERIMENTAL'
+            'Fast baseline: 70fa082312'
+            'Startup fix: existing baseline changes preserved'
+            'Rendering changes: PR 614'
+            'Redundant patches automatically dropped'
+            "Built source HEAD: $rev"
+            'Target: Windows x64 MSVC'
+            'Not yet gameplay verified'
+            'No game ROMs, firmware, saves, or keys included'
+            ''
             'Source history:'
           ) | Out-File -Encoding utf8 HYBRID-MANIFEST.txt
-          git log --format='%h %s' -14 | Out-File -Append -Encoding utf8 HYBRID-MANIFEST.txt
-          git diff --stat 70fa082312 HEAD | Out-File -Append -Encoding utf8 HYBRID-MANIFEST.txt
 
-      - name: Preserve manifest even when later compilation fails
+          git log --format='%h %s' -14 |
+            Out-File -Append -Encoding utf8 HYBRID-MANIFEST.txt
+
+          git diff --stat 70fa082312 HEAD |
+            Out-File -Append -Encoding utf8 HYBRID-MANIFEST.txt
+
+          Write-Host 'Source integration completed.'
+
+      - name: Preserve integration diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -133,12 +173,18 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path build/release/bin/eglantine.exe)) {
-            throw 'Build failed: no eglantine.exe.'
+            throw 'Build failed: eglantine.exe was not produced.'
           }
+
           windeployqt --release --no-translations build/release/bin/eglantine.exe
+
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Qt packaging failed.'
+          }
+
           Copy-Item HYBRID-MANIFEST.txt build/release/bin/
 
-      - name: Download hybrid Windows build
+      - name: Upload hybrid Windows build
         uses: actions/upload-artifact@v4
         with:
           name: B570-Eglantine-Hybrid-Windows-x64
