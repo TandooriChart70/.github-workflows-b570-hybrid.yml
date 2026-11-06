@@ -12,6 +12,8 @@ jobs:
     name: Build experimental B570 V3 Windows x64
     runs-on: windows-2022
     timeout-minutes: 180
+    env:
+      PLATFORM: windows-x86_64
 
     steps:
       - name: Checkout Eglantine source
@@ -22,204 +24,136 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Integrate V1 black-screen fixes and selected Aubepine/Frizti changes
+      - name: Integrate fast source, Zelda fixes, and selected Aubepine/Frizti changes
         id: hybrid
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           git config user.name 'B570 Hybrid Experiment'
           git config user.email 'b570-hybrid@users.noreply.github.com'
           git config core.longpaths true
 
-          # Original fast Eglantine source.
+          # Keep the same proven source baseline used for Hybrid V1.
           git checkout --detach 70fa082312
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Original fast baseline not found.'
-          }
-
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot check out the fast baseline.' }
           git switch -c b570-v3-aubepine
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Could not create experiment branch.'
-          }
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot create V3 branch.' }
 
-          # Apply the same 11 Zelda rendering fixes as Hybrid V1.
           git fetch origin '+refs/pull/614/head:refs/remotes/origin/oot-rendering'
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Cannot retrieve PR 614.'
-          }
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch Zelda PR 614.' }
 
-          $render = @(
-            '41e7291',
-            '245d902',
-            '2d29137',
-            '502e6e2',
-            'f918505',
-            '8424eeb',
-            '01783ce',
-            'a6dea8a',
-            'dc3e912',
-            '8de2d42',
-            'b536a97'
+          $renderPatches = @(
+            '41e7291', '245d902', '2d29137', '502e6e2',
+            'f918505', '8424eeb', '01783ce', 'a6dea8a',
+            'dc3e912', '8de2d42', 'b536a97'
           )
-
-          foreach ($sha in $render) {
-            Write-Host "Required OOT fix: $sha"
-
+          foreach ($sha in $renderPatches) {
+            Write-Host "Applying required Zelda patch $sha"
             git cherry-pick -x --empty=drop $sha
-
             if ($LASTEXITCODE -ne 0) {
-              git status --short |
-                Out-File -Encoding utf8 integration-error.txt
-
-              throw "Required V1 fix failed at $sha"
+              git status --short | Out-File -Encoding utf8 integration-error.txt
+              throw "Required Zelda rendering patch failed: $sha"
             }
           }
-
           $v1rev = (git rev-parse HEAD).Trim()
-
-          Write-Host 'Zelda rendering fixes integrated.'
-
-          # Fetch Aubepine release source.
-          git remote add aubepine https://github.com/pattex67/Aubepine.git
-
-          git fetch --no-tags aubepine '+refs/tags/aubepine-2026-11-05b:refs/tags/b570-aubepine-05b'
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Aubepine release tag unavailable.'
-          }
-
-          $aubref = (git rev-parse 'refs/tags/b570-aubepine-05b^{commit}').Trim()
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Cannot resolve Aubepine release.'
-          }
-
-          $paths = @(
-            git ls-tree -r --name-only $aubref -- pattex/patches
-          )
-
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Cannot list Aubepine patch files.'
-          }
 
           $applied = [System.Collections.Generic.List[string]]::new()
           $skipped = [System.Collections.Generic.List[string]]::new()
 
-          # Apply selected Aubepine graphics patches.
-          foreach ($number in @('0030','0033','0034','0038')) {
+          # The Aubepine release contains format-patch files under pattex/patches.
+          git remote add aubepine https://github.com/pattex67/Aubepine.git
+          git fetch --no-tags aubepine '+refs/tags/aubepine-2026-11-05b:refs/tags/b570-aubepine-05b'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch the Aubepine release tag.' }
+          $aubref = (git rev-parse 'refs/tags/b570-aubepine-05b^{commit}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Aubepine release commit.' }
 
-            $matches = @(
-              $paths | Where-Object { $_ -match "/$number-" }
-            )
+          $paths = @(git ls-tree -r --name-only $aubref -- pattex/patches)
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Aubepine patch files.' }
 
+          # Select Zelda-relevant patches, not the entire AMD-focused fork.
+          foreach ($number in @('0030', '0033', '0034', '0038')) {
+            $matches = @($paths | Where-Object { $_ -match "/${number}-" })
             if ($matches.Count -ne 1) {
-              $skipped.Add("Aubepine $number: patch file missing or ambiguous")
+              $skipped.Add("Aubepine ${number}: patch missing or ambiguous")
               continue
             }
 
-            $path = $matches[0]
-            $file = Join-Path $env:RUNNER_TEMP "aubepine-$number.patch"
-
-            git show "${aubref}:$path" > $file
-
-            if ($LASTEXITCODE -ne 0) {
-              throw "Cannot read Aubepine patch $number"
-            }
+            $patchPath = $matches[0]
+            $patchFile = Join-Path $env:RUNNER_TEMP "aubepine-${number}.patch"
+            git show "${aubref}:$patchPath" > $patchFile
+            if ($LASTEXITCODE -ne 0) { throw "Cannot read Aubepine patch ${number}." }
 
             $before = (git rev-parse HEAD).Trim()
-
-            Write-Host "Trying Aubepine patch $number ($path)"
-
-            git am --3way --empty=drop $file
-
+            Write-Host "Testing Aubepine ${number}: $patchPath"
+            git am --3way --empty=drop $patchFile
             if ($LASTEXITCODE -eq 0) {
-
               $after = (git rev-parse HEAD).Trim()
-
-              if ($before -ne $after) {
-                $applied.Add("Aubepine $number $path")
-                Write-Host "Applied Aubepine $number"
+              if ($after -ne $before) {
+                $applied.Add("Aubepine ${number}: $patchPath")
               } else {
-                $skipped.Add("Aubepine $number: already present")
+                $skipped.Add("Aubepine ${number}: already present")
               }
-
             } else {
-
               git am --abort
-
-              if ($LASTEXITCODE -ne 0) {
-                throw "Cannot abort Aubepine patch $number"
-              }
-
-              $skipped.Add("Aubepine $number: does not apply cleanly")
-              Write-Host "Skipped Aubepine $number"
+              if ($LASTEXITCODE -ne 0) { throw "Could not abort Aubepine patch ${number}." }
+              $skipped.Add("Aubepine ${number}: patch does not apply cleanly")
             }
           }
 
-          # Fetch Frizti-related optimization from Lichii.
+          # One small Frizti-related optimization, only if it applies cleanly.
           git remote add lichii https://github.com/zortos293/Lichii.git
-
           git fetch --no-tags lichii '+refs/pull/194/head:refs/remotes/lichii/frizti-port'
-
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Cannot fetch Frizti port PR 194.'
-          }
-
-          $before = (git rev-parse HEAD).Trim()
-
-          git cherry-pick -x --empty=drop 9218296
-
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch the Frizti-related Lichii PR.' }
+          git cat-file -e '9218296^{commit}' 2>$null
           if ($LASTEXITCODE -eq 0) {
-
-            $after = (git rev-parse HEAD).Trim()
-
-            if ($before -ne $after) {
-              $applied.Add('Lichii/Frizti PR194 preflush cache 9218296')
+            $before = (git rev-parse HEAD).Trim()
+            git cherry-pick -x --empty=drop 9218296
+            if ($LASTEXITCODE -eq 0) {
+              $after = (git rev-parse HEAD).Trim()
+              if ($after -ne $before) {
+                $applied.Add('Frizti-related preflush cache: 9218296')
+              } else {
+                $skipped.Add('Frizti-related preflush cache: already present')
+              }
             } else {
-              $skipped.Add('Lichii/Frizti 9218296: already present')
+              git cherry-pick --abort
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot abort Frizti-related patch.' }
+              $skipped.Add('Frizti-related preflush cache: patch does not apply cleanly')
             }
-
           } else {
-
-            git cherry-pick --abort
-
-            if ($LASTEXITCODE -ne 0) {
-              throw 'Cannot abort Frizti change.'
-            }
-
-            $skipped.Add('Lichii/Frizti 9218296: does not apply cleanly')
+            $skipped.Add('Frizti-related preflush cache: commit unavailable')
           }
 
-          # Generate hybrid build report.
+          $dirty = @(git status --porcelain)
+          if ($dirty.Count -ne 0) {
+            throw 'Source tree is not clean after integration; stopping the build.'
+          }
+
           $rev = (git rev-parse HEAD).Trim()
-
           @(
-            'B570 Hybrid V3 - EXPERIMENTAL'
-            'Not gameplay verified'
-            'Fast baseline: Eglantine 70fa082312'
-            "V1 with PR614: $v1rev"
-            "Aubepine release: $aubref"
-            "Final source revision: $rev"
+            'B570 HYBRID V3 - EXPERIMENTAL - NOT GAMEPLAY VERIFIED'
+            'Fast Eglantine baseline: 70fa082312'
+            "V1 Zelda rendering fixes revision: $v1rev"
+            "Aubepine release commit: $aubref"
+            "Final V3 revision: $rev"
             ''
-            'APPLIED:'
-            ($applied | Out-String)
-            'SKIPPED:'
-            ($skipped | Out-String)
-            'No game data, firmware, keys or saves included.'
+            'Applied additions:'
+            $applied
+            ''
+            'Skipped additions:'
+            $skipped
+            ''
+            'No game, firmware, or keys included.'
           ) | Out-File -Encoding utf8 HYBRID-V3-REPORT.txt
-
-          git diff --stat $v1rev HEAD |
-            Out-File -Append -Encoding utf8 HYBRID-V3-REPORT.txt
+          git diff --stat $v1rev HEAD | Out-File -Append -Encoding utf8 HYBRID-V3-REPORT.txt
 
           if ($applied.Count -eq 0) {
-            throw 'No Aubepine or Frizti additions integrated. Refusing to build V1 duplicate.'
+            throw 'No additional Aubepine or Frizti patches applied. V3 would duplicate V1.'
           }
+          "sha=$rev" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "V3 source ready. Applied $($applied.Count) additional patch(es)."
 
-          "sha=$rev" |
-            Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-          Write-Host 'Hybrid V3 source integration completed.'
-
-      - name: Upload source integration report
+      - name: Upload integration diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -279,17 +213,9 @@ jobs:
         shell: pwsh
         run: |
           $exe = 'build/release/bin/eglantine.exe'
-
-          if (-not (Test-Path $exe)) {
-            throw 'No eglantine.exe produced.'
-          }
-
+          if (-not (Test-Path $exe)) { throw 'No eglantine.exe was produced.' }
           windeployqt --release --no-translations $exe
-
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Qt deployment failed.'
-          }
-
+          if ($LASTEXITCODE -ne 0) { throw 'Qt packaging failed.' }
           Copy-Item HYBRID-V3-REPORT.txt build/release/bin/
 
       - name: Upload Windows build
