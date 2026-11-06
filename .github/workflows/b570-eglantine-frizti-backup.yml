@@ -1,5 +1,5 @@
 
-name: B570 Backup - Fast Eglantine plus scoped Frizti changes
+name: B570 Backup - Eglantine plus Frizti Performance
 
 on:
   workflow_dispatch:
@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  build-msvc:
-    name: Build Eglantine-Frizti backup (experimental)
+  build:
+    name: Build B570 Frizti Backup
     runs-on: windows-2022
     timeout-minutes: 180
 
@@ -17,7 +17,7 @@ jobs:
       PLATFORM: windows-x86_64
 
     steps:
-      - name: Check out Eglantine source
+      - name: Checkout Eglantine source
         uses: actions/checkout@v4
         with:
           repository: Djihads80/Eglantine
@@ -25,30 +25,33 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Integrate original fast source, rendering fix, and scoped Frizti changes
+      - name: Create hybrid source
         id: hybrid
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          git config user.name 'B570 Experimental Test Builder'
-          git config user.email 'b570-experimental-test@users.noreply.github.com'
+
+          git config user.name 'B570 Hybrid Builder'
+          git config user.email 'b570-builder@users.noreply.github.com'
           git config core.longpaths true
 
-          # Original fast Eglantine baseline.
+          Write-Host 'Loading original fast Eglantine...'
+
           git checkout --detach 70fa082312
           if ($LASTEXITCODE -ne 0) {
-            throw 'Cannot check out original fast source.'
+            throw 'Original fast source unavailable.'
           }
 
           git switch -c b570-frizti-backup
           if ($LASTEXITCODE -ne 0) {
-            throw 'Could not create experimental branch.'
+            throw 'Failed to create backup branch.'
           }
 
-          # Apply OoT rendering fixes from Hybrid V1.
+          Write-Host 'Fetching Zelda rendering corrections...'
+
           git fetch origin '+refs/pull/614/head:refs/remotes/origin/oot-rendering'
           if ($LASTEXITCODE -ne 0) {
-            throw 'Could not fetch Eglantine PR 614.'
+            throw 'Cannot fetch Eglantine rendering fixes.'
           }
 
           $renderPatches = @(
@@ -66,137 +69,178 @@ jobs:
           )
 
           foreach ($sha in $renderPatches) {
-            Write-Host "Rendering patch: $sha"
+            Write-Host "Applying Zelda fix $sha"
+
             git cherry-pick -x --empty=drop $sha
 
             if ($LASTEXITCODE -ne 0) {
               git status --short |
                 Out-File -Encoding utf8 integration-conflicts.txt
 
-              git diff --name-only --diff-filter=U |
-                Out-File -Append -Encoding utf8 integration-conflicts.txt
-
-              throw "Rendering integration failed at $sha."
+              throw "Required rendering fix failed: $sha"
             }
           }
 
           $renderRev = (git rev-parse HEAD).Trim()
 
-          # Fetch selected Lichii optimizations.
+          Write-Host 'Zelda rendering fixes integrated.'
+
+          Write-Host 'Fetching selected Lichii and Frizti improvements...'
+
           git remote add lichii https://github.com/zortos293/Lichii.git
 
-          git fetch --no-tags lichii '+refs/pull/175/head:refs/remotes/lichii/storage-buffer-cache'
+          git fetch --no-tags lichii '+refs/pull/175/head:refs/remotes/lichii/pr175'
           if ($LASTEXITCODE -ne 0) {
             throw 'Could not fetch Lichii PR 175.'
           }
 
-          git fetch --no-tags lichii '+refs/pull/176/head:refs/remotes/lichii/native-uniform-bank'
+          git fetch --no-tags lichii '+refs/pull/176/head:refs/remotes/lichii/pr176'
           if ($LASTEXITCODE -ne 0) {
             throw 'Could not fetch Lichii PR 176.'
           }
 
-          # Fetch Frizti V2 source.
-          git remote add frizti https://github.com/Frizti/Lichii.git
-
-          git fetch --no-tags frizti '+refs/tags/frizti-v2:refs/tags/frizti-v2-test'
+          git fetch --no-tags lichii '+refs/pull/194/head:refs/remotes/lichii/frizti-port'
           if ($LASTEXITCODE -ne 0) {
-            throw 'Could not fetch Frizti V2 tag.'
+            throw 'Could not fetch Frizti integration PR 194.'
           }
 
-          $friztiHead = (git rev-parse 'refs/tags/frizti-v2-test').Trim()
-          Write-Host "Frizti release source: $friztiHead"
-
-          # Apply selected performance patches.
           $extraPatches = @(
             @{
-              Label='Lichii PR 175: SSBO cache'
-              Ref='refs/remotes/lichii/storage-buffer-cache'
+              Label = 'Lichii storage buffer cache'
+              Ref = 'refs/remotes/lichii/pr175'
             },
             @{
-              Label='Lichii PR 176: uniform banks'
-              Ref='refs/remotes/lichii/native-uniform-bank'
+              Label = 'Lichii uniform bank uploads'
+              Ref = 'refs/remotes/lichii/pr176'
             },
             @{
-              Label='Frizti V2: Dynamic FPS'
-              Ref='765659a'
+              Label = 'Frizti port preflush caching'
+              Ref = '9218296'
+            },
+            @{
+              Label = 'Frizti port constant buffer page limit'
+              Ref = 'bfc3eb5'
             }
           )
 
+          $applied = @()
+          $skipped = @()
+
           foreach ($patch in $extraPatches) {
-            $sha = (git rev-parse $patch.Ref).Trim()
+            $reference = $patch.Ref
+
+            $sha = (git rev-parse --verify "$reference^{commit}" 2>$null)
 
             if ($LASTEXITCODE -ne 0) {
-              throw "Cannot find $($patch.Label)."
+              Write-Host "Unavailable: $($patch.Label)"
+              $skipped += "$($patch.Label): unavailable"
+              continue
             }
 
-            Write-Host "Trying $($patch.Label) ($sha)"
+            $sha = $sha.Trim()
+            $before = (git rev-parse HEAD).Trim()
+
+            Write-Host "Testing $($patch.Label)..."
 
             git cherry-pick -x --empty=drop $sha
 
+            if ($LASTEXITCODE -eq 0) {
+              $after = (git rev-parse HEAD).Trim()
+
+              if ($after -ne $before) {
+                Write-Host "Applied: $($patch.Label)"
+                $applied += $patch.Label
+              } else {
+                Write-Host "Already present: $($patch.Label)"
+                $skipped += "$($patch.Label): already present"
+              }
+
+              continue
+            }
+
+            Write-Host "Skipping incompatible change: $($patch.Label)"
+
+            $skipped += "$($patch.Label): cherry-pick failed"
+
+            git cherry-pick --abort
+
             if ($LASTEXITCODE -ne 0) {
-              git status --short |
-                Out-File -Encoding utf8 integration-conflicts.txt
+              throw "Could not safely abort patch: $($patch.Label)"
+            }
 
-              git diff --name-only --diff-filter=U |
-                Out-File -Append -Encoding utf8 integration-conflicts.txt
+            $clean = @(git status --porcelain)
 
-              throw "Source conflict applying $($patch.Label)."
+            if ($clean.Count -ne 0) {
+              throw 'Working tree not clean after aborted patch.'
             }
           }
 
-          $rev = (git rev-parse HEAD).Trim()
+          @(
+            'B570 Frizti Backup Integration'
+            ''
+            'Successfully applied:'
+            $applied
+            ''
+            'Skipped:'
+            $skipped
+          ) | Out-File -Encoding utf8 integration-report.txt
 
-          if ($rev -eq $renderRev) {
-            throw 'No Frizti-related changes applied.'
+          if ($applied.Count -eq 0) {
+            throw 'No compatible additional performance patches applied. Backup build stopped.'
           }
+
+          $rev = (git rev-parse HEAD).Trim()
 
           "sha=$rev" |
             Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
           @(
-            'EXPERIMENTAL B570 BACKUP'
+            'B570 EGLANTINE FRIZTI BACKUP'
+            'Experimental, not gameplay verified'
             'Original fast Eglantine: 70fa082312'
-            'OoT rendering: Eglantine PR 614'
-            'Lichii optimizations: PR 175 and PR 176'
-            'Frizti Dynamic FPS: 765659a'
-            "Frizti V2 source: $friztiHead"
-            "Hybrid V1 source: $renderRev"
+            'Zelda rendering corrections: PR 614'
+            "Rendering baseline: $renderRev"
             "Backup source: $rev"
-            'Not gameplay verified'
-            'No game, firmware, saves or keys included'
+            "Additional changes applied: $($applied.Count)"
             ''
-            'Recent source history:'
+            'Applied changes:'
+            $applied
+            ''
+            'Skipped changes:'
+            $skipped
+            ''
+            'No game, firmware or keys included'
           ) | Out-File -Encoding utf8 HYBRID-MANIFEST.txt
-
-          git log --format='%h %s' -16 |
-            Out-File -Append -Encoding utf8 HYBRID-MANIFEST.txt
 
           git diff --stat $renderRev HEAD |
             Out-File -Append -Encoding utf8 HYBRID-MANIFEST.txt
 
-      - name: Upload integration diagnostics
+          Write-Host 'Hybrid source integration finished.'
+
+      - name: Save integration results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: B570-Frizti-Backup-Integration-Report
+          name: B570-Frizti-Integration-Report
           path: |
             HYBRID-MANIFEST.txt
+            integration-report.txt
             integration-conflicts.txt
           if-no-files-found: ignore
 
-      - name: Set up Eglantine build metadata
+      - name: Setup Eglantine build
         uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
         with:
           platform: windows-x86_64
           sha: ${{ steps.hybrid.outputs.sha }}
-          refspec: b570-fast-eglantine-plus-frizti
-          tag: b570-frizti-backup-experimental
+          refspec: b570-frizti-experimental
+          tag: b570-frizti-test
           release: 'false'
 
-      - name: Enable Visual Studio MSVC
+      - name: Enable Visual Studio
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install Qt 6.8.3
+      - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
@@ -210,7 +254,7 @@ jobs:
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
 
-      - name: Configure Windows build
+      - name: Configure emulator
         shell: bash
         run: >-
           cmake -S . -B build/release -G Ninja
@@ -226,26 +270,31 @@ jobs:
           -DUSE_DISCORD_PRESENCE=OFF
           -DNIGHTLY_BUILD=ON
 
-      - name: Compile backup Windows emulator
+      - name: Compile B570 backup emulator
         shell: bash
         run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
 
-      - name: Package DLLs and manifest
+      - name: Package Windows emulator
         shell: pwsh
         run: |
-          if (-not (Test-Path build/release/bin/eglantine.exe)) {
-            throw 'No eglantine.exe produced.'
+          $exe = 'build/release/bin/eglantine.exe'
+
+          if (-not (Test-Path $exe)) {
+            throw 'Compilation did not produce eglantine.exe.'
           }
 
-          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          windeployqt --release --no-translations $exe
 
           if ($LASTEXITCODE -ne 0) {
-            throw 'Qt packaging failed.'
+            throw 'Qt deployment failed.'
           }
 
           Copy-Item HYBRID-MANIFEST.txt build/release/bin/
+          Copy-Item integration-report.txt build/release/bin/
 
-      - name: Upload B570 backup emulator
+          Write-Host 'Windows package ready.'
+
+      - name: Upload backup emulator
         uses: actions/upload-artifact@v4
         with:
           name: B570-Eglantine-Frizti-Backup-Windows-x64
