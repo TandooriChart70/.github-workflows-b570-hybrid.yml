@@ -1,0 +1,120 @@
+# Safe wrapper to test a freshly BUILT hybrid, avoiding cross-build shader cache poisoning.
+# Place beside eglantine.exe in the extracted GitHub Actions artifact.
+$ErrorActionPreference = 'Stop'
+$exe = Join-Path $PSScriptRoot 'eglantine.exe'
+if (-not (Test-Path -LiteralPath $exe)) {
+    Write-Host 'eglantine.exe not found alongside this script.' -ForegroundColor Red
+    Write-Host 'Extract the GitHub Actions hybrid artifact and copy both Safe-Test-Hybrid files beside eglantine.exe.'
+    Read-Host 'Press Enter to exit'
+    exit 1
+}
+if (Get-Process -Name eglantine -ErrorAction SilentlyContinue) {
+    Write-Host 'Close other Eglantine windows first. Only one emulator can use this cache safely.' -ForegroundColor Yellow
+    Read-Host 'Press Enter to exit'
+    exit 1
+}
+$shaderRoot = Join-Path $env:APPDATA 'eden\cache\shader'
+$titleId = '0400486024dec000'
+$original = Join-Path $shaderRoot $titleId
+$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+$backup = Join-Path $shaderRoot ("${titleId}_preserved_$timestamp")
+$hasBackup = $false
+New-Item -ItemType Directory -Force -Path $shaderRoot | Out-Null
+if (Test-Path -LiteralPath $original) {
+    Move-Item -LiteralPath $original -Destination $backup -ErrorAction Stop
+    $hasBackup = $true
+}
+# These are controls for a controlled A/B, NOT a guarantee of better rendering.
+$env:EDEN_NX2_SPLIT = '2'
+$env:EDEN_NX2_FENCE_BATCH = '1'
+$env:EDEN_NX2_TENSOR = '0'
+Write-Host 'Experimental B570 source hybrid. Test past the intro; note FPS + black-screen result.'
+Write-Host 'Original Zelda shaders are moved aside while the hybrid runs and restored afterward.'
+try {
+    $p = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -PassThru
+    $p.WaitForExit()
+} finally {
+    # Never delete a shader cache: archive the experiment's new cache to a separate folder.
+    if (Test-Path -LiteralPath $original) {
+        $trialCache = Join-Path $shaderRoot ("${titleId}_hybrid_trial_$timestamp")
+        Move-Item -LiteralPath $original -Destination $trialCache -ErrorAction Stop
+        Write-Host "Trial cache saved separately: $trialCache"
+    }
+    if ($hasBackup -and (Test-Path -LiteralPath $backup)) {
+        Move-Item -LiteralPath $backup -Destination $original -ErrorAction Stop
+        Write-Host 'Original Zelda shader cache restored.'
+    }
+}
+$log = Join-Path $env:APPDATA 'eden\log\eden_log.txt'
+$reportDir = Join-Path $PSScriptRoot 'Trial-Reports'
+New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+if (Test-Path -LiteralPath $log) {
+    $report = Join-Path $reportDir ("hybrid_$timestamp.txt")
+    Get-Content -LiteralPath $log -Tail 600 | Set-Content -Encoding UTF8 -LiteralPath $report
+    Write-Host "Log report: $report"
+}
+Read-Host 'Press Enter to exit'
+
+B570 Eglantine source-hybrid experiment (November 6, 2026)
+===========================================================
+READ THIS: This ZIP does NOT contain a compiled emulator. It contains a genuine
+source integration/build recipe, built around the EXACT code revision of the
+fastest build you uploaded. The integration and resulting gameplay are NOT
+verified. An upstream source merge may have conflicts or not compile.
+
+SOURCE BASE
+* Fast initial Eglantine: upstream Eglantine commit 70fa082312
+  (release: branch-switchbrew-names-736c1d29).
+* Boot fix: WaitIfEqual64 from commit e736dfde9e / PR #567.
+* Rendering fixes: PR #614, 11 separate commits, in order.
+* GPU: Intel Arc B570 + Intel Core i5-14400F, Vulkan.
+
+WHAT THE WORKFLOW DOES
+1. Checks out original source for the fast binary (NOT its executable files).
+2. Cherry-picks the startup fix and the Ocarina black-scene shader/upscaler fixes.
+3. Stops with a precise conflict message if code cannot be combined.
+4. If patching works, tries a Windows MSVC compile using Eglantine's CI settings.
+5. If compilation succeeds, produces B570-Eglantine-Hybrid-Windows-x64.zip in
+   GitHub Actions artifacts. No game data, keys, firmware, or saves are included.
+
+HOW TO RUN THE CLOUD BUILD (no Visual Studio installation required)
+1. Create a NEW empty repository on github.com. It may be private, depending on
+   your GitHub Actions entitlement. You do NOT need to upload your game or ZIPs.
+2. Open the new repository, choose Add file > Create new file.
+3. In the filename box, type .github/workflows/b570-hybrid.yml
+4. Paste the entire contents of the matching file in this ZIP, then Commit.
+5. Open the Actions tab, select 'B570 Hybrid - fast Eglantine plus OOT rendering fix',
+   then Run workflow.
+6. If it succeeds, download the 'B570-Eglantine-Hybrid-Windows-x64' artifact.
+   It will be a ZIP. Extract into a separate folder.
+7. Copy Safe-Test-Hybrid.cmd AND Safe-Test-Hybrid.ps1 from THIS package beside
+   the compiled eglantine.exe. Double-click Safe-Test-Hybrid.cmd.
+8. Let the game reach the end of the intro. Close emulator normally. The wrapper
+   backs up/restores the title-specific cache, saves the trial's cache separately,
+   and exports a tail of the log into Trial-Reports. Upload the report back here.
+
+IF IT FAILS
+* If 'Apply startup and rendering fixes' fails, send the step log. It identifies
+  which specific cherry-pick conflicts with the older source baseline.
+* If compilation fails, send the FIRST compiler error (not just the last line).
+* This test is exploratory. The older code might lack support required by PR #614.
+* Do not replace or delete the three original Eglantine folders.
+* GitHub Actions may be subject to account quotas / compute billing.
+
+VERIFICATION STATUS
+* The source commits and PR numbers were checked on the official GitHub pages.
+* This workflow file was syntax-inspected offline.
+* The integration was NOT executed here: this environment cannot access GitHub
+  with git or compile a native Windows Eglantine executable.
+* There is NO claim that the hybrid maintains 60 FPS or solves all gameplay bugs.
+
+CITATIONS
+https://github.com/Djihads80/Eglantine/releases/tag/branch-switchbrew-names-736c1d29
+https://github.com/Djihads80/Eglantine/pull/614
+https://github.com/Djihads80/Eglantine/issues/679
+https://github.com/Djihads80/Eglantine/blob/nx2/.github/workflows/build-windows.yml
+
+@echo off
+cd /d "%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Safe-Test-Hybrid.ps1"
+if errorlevel 1 pause
