@@ -136,7 +136,7 @@ jobs:
           new = 'return value == nullptr ? s64{' + os.environ['FENCE_US'] + '} : static_cast<s64>(std::atoll(value));'
           if src.count(old) != 1:
               raise RuntimeError("Expected original fence default not found exactly once")
-          path.write_text(src.replace(old, new, 1), encoding="utf-8", newline="\\n")
+          path.write_text(src.replace(old, new, 1), encoding="utf-8", newline="\n")
           print("Changed scheduler fence deferral default from 500 to", os.environ['FENCE_US'], "microseconds")
           PY
           git diff --check
