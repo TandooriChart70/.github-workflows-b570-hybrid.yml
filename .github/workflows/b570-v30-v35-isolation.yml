@@ -1,0 +1,218 @@
+name: B570 V30-V35 shader isolation with zero fence deferral
+on:
+  push:
+    paths:
+      - '.github/workflows/b570-v30-v35-isolation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-variants:
+    name: Build ${{ matrix.version }} (fence ${{ matrix.fence_us }}us)
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - {version: V30, features: 'isetp', fence_us: 0}
+          - {version: V31, features: 'gather', fence_us: 0}
+          - {version: V32, features: 'isetp,scratch', fence_us: 0}
+          - {version: V33, features: 'isetp,reduction', fence_us: 0}
+          - {version: V34, features: 'isetp,shift', fence_us: 0}
+          - {version: V35, features: 'gather,shift', fence_us: 0}
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      TEST_VERSION: ${{ matrix.version }}
+      FENCE_US: ${{ matrix.fence_us }}
+      FEATURES: ${{ matrix.features }}
+      BASE_SHA: e736dfde9e
+      PATCH_SOURCE_SHA: f22ecc4ac784a4ce13fe72fb66ac78e86db0c01d
+      PLATFORM: windows-x86_64
+    steps:
+      - name: Checkout pinned Eglantine daily
+        uses: actions/checkout@v4
+        with:
+          repository: Djihads80/Eglantine
+          ref: nx2
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Apply isolated shader lowering experiment with strict source checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$BASE_SHA"
+          test "$(git rev-parse --short=10 HEAD)" = "e736dfde9e"
+          python - <<'PY'
+          from pathlib import Path
+          from urllib.request import urlopen
+          import os
+          
+          path = Path("src/shader_recompiler/frontend/ampere/lower_to_maxwell.h")
+          original = path.read_text(encoding="utf-8")
+          sha = os.environ["PATCH_SOURCE_SHA"]
+          version = os.environ["TEST_VERSION"]
+          features = os.environ["FEATURES"].split(",")
+          url = ("https://raw.githubusercontent.com/A-Man-With-A-Plan-dev/Eglantine/"
+                 + sha + "/" + path.as_posix())
+          with urlopen(url, timeout=90) as response:
+              upstream = response.read().decode("utf-8")
+          markers = {
+              "isetp": ("            if (!floating && insn.Bits(72, 1)) {",
+                        "            const u32 a = operand(0, floating), b = operand(1, floating);",
+                        "const u32 accumulate = insn.Bits(87, 4)"),
+              "gather": ("        case 0xb63: case 0xf63: {",
+                         "        case 0xb60: case 0xf60: case 0x361: {",
+                         "const u32 offset_mode = insn.Bits(76, 2)"),
+              "scratch": ("inline RegisterPressure PrepareRegisterPressure(",
+                          "// Lower only operations whose semantics",
+                          "case 0x321: operand(16, input.Bits(74, 2) + 1)"),
+              "reduction": ("        case 0x98e: {",
+                            "        case 0x2bd:",
+                            "const u32 type = insn.Bits(73, 3)"),
+              "shift": ("        case 0x819: {",
+                        "        case 0xa11: {",
+                        "SHF.R.U64 funnel")
+          }
+          expected = {
+              "V30": ["isetp"],
+              "V31": ["gather"],
+              "V32": ["isetp", "scratch"],
+              "V33": ["isetp", "reduction"],
+              "V34": ["isetp", "shift"],
+              "V35": ["gather", "shift"],
+          }
+          if features != expected.get(version):
+              raise RuntimeError(f"Unexpected feature matrix: {version}: {features}")
+          
+          def block(source, a, b, label):
+              if source.count(a) != 1:
+                  raise RuntimeError(f"{label}: start marker is missing or duplicated: {a}")
+              begin = source.index(a)
+              stop = source.find(b, begin + len(a))
+              if stop < begin:
+                  raise RuntimeError(f"{label}: end marker missing: {b}")
+              return source[begin:stop]
+          
+          result = original
+          for feature in features:
+              a, b, proof = markers[feature]
+              old = block(result, a, b, "original")
+              new = block(upstream, a, b, "pinned reference")
+              if old == new or proof not in new:
+                  raise RuntimeError(f"{feature}: unexpected patch input, refusing to build")
+              result = result.replace(old, new, 1)
+              print(f"{version}: applied {feature}, {len(old)} -> {len(new)} bytes")
+          
+          if result == original:
+              raise RuntimeError("No source changes made")
+          path.write_text(result, encoding="utf-8", newline="\n")
+          PY
+          git diff --check
+          test "$(git diff --name-only)" = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
+          git diff --stat
+          {
+            echo "B570 $TEST_VERSION - ORIGINAL DAILY + ISOLATED SHADER FIXES"
+            echo 'EXPERIMENTAL: NOT VERIFIED IN GAME ON INTEL ARC B570'
+            echo "Daily baseline: Djihads80/Eglantine $(git rev-parse HEAD)"
+            echo "Shader reference: A-Man-With-A-Plan-dev/Eglantine $PATCH_SOURCE_SHA"
+            echo "Shader changes: $FEATURES"
+            echo 'Original MSVC, Qt 6.8.3, AV1-capable FFmpeg'
+            echo 'Launcher: EDEN_NX2_SPLIT=0 and separate per-build shader cache'
+            echo 'User game files, firmware, and saves are NOT included or modified'
+            echo 'Build success does not mean visible 3D or controllable gameplay passed'
+            git diff --stat
+          } > B570-EXPERIMENT-MANIFEST.txt
+      - name: Apply isolated Vulkan scheduler fence timing change
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          path = Path("src/video_core/renderer_vulkan/vk_scheduler.cpp")
+          src = path.read_text(encoding="utf-8")
+          old = 'return value == nullptr ? s64{500} : static_cast<s64>(std::atoll(value));'
+          new = 'return value == nullptr ? s64{' + os.environ['FENCE_US'] + '} : static_cast<s64>(std::atoll(value));'
+          if src.count(old) != 1:
+              raise RuntimeError("Expected original fence default not found exactly once")
+          path.write_text(src.replace(old, new, 1), encoding="utf-8", newline="\n")
+          print("Changed scheduler fence deferral default from 500 to", os.environ['FENCE_US'], "microseconds")
+          PY
+          git diff --check
+          git diff --stat
+          {
+            echo "Vulkan scheduler fence deferral default (microseconds): $FENCE_US"
+            echo "User override EDEN_NX2_FENCE_FLUSH_US must be unset for test"
+            echo "Shader changes: $FEATURES"
+            echo "No game files, saves, firmware or keys included"
+            echo "Experimental: gameplay and rendering unverified"
+            git diff --stat
+          } >> B570-EXPERIMENT-MANIFEST.txt
+      - name: Setup build metadata and caches
+        uses: ./.github/actions/setup-build
+        with:
+          platform: windows-x86_64
+          sha: e736dfde9e
+          refspec: b570-${{ matrix.version }}-original-daily
+          tag: b570-${{ matrix.version }}-isolated
+          release: 'false'
+      - name: Enable MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+      - name: Configure Windows build
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DUSE_DISCORD_PRESENCE=OFF
+          -DNIGHTLY_BUILD=ON
+      - name: Compile
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+      - name: Verify AV1 dependency configuration
+        shell: pwsh
+        run: |
+          $ffmpeg = Get-Content 'externals/ffmpeg/CMakeLists.txt' -Raw
+          if ($ffmpeg -notmatch 'AddJsonPackage\(ffmpeg-ci-av1\)') { throw 'AV1 FFmpeg dependency not configured' }
+      - name: Package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/release/bin/eglantine.exe)) { throw 'Executable missing' }
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          Copy-Item B570-EXPERIMENT-MANIFEST.txt build/release/bin/
+          if (Test-Path build/release/bin/eglantine.pdb) { Write-Host 'PDB included' }
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-Fence-${{ matrix.fence_us }}us-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload manifest even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-source-report
+          path: B570-EXPERIMENT-MANIFEST.txt
+          if-no-files-found: ignore
