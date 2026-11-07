@@ -28,14 +28,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Djihads80/Eglantine
-          ref: e736dfde9e
-          fetch-depth: 1
+          ref: nx2
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Transplant only the known ISETP.EX extension from pinned fork
         shell: bash
         run: |
           set -euo pipefail
+          git checkout --detach "$BASE_SHA"
           test "$(git rev-parse --short=10 HEAD)" = "e736dfde9e"
           python - <<'PY'
           from pathlib import Path
