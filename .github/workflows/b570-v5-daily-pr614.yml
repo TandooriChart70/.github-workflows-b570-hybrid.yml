@@ -1,0 +1,215 @@
+name: B570 V5 - November 5 daily plus OOT gameplay renderer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build B570 V5 Windows x64 (experimental)
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      PLATFORM: windows-x86_64
+
+    steps:
+      - name: Check out upstream Eglantine
+        uses: actions/checkout@v4
+        with:
+          repository: Djihads80/Eglantine
+          ref: nx2
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Pin the fast daily build and integrate PR 614
+        id: source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'B570 V5 build bot'
+          git config user.email 'b570-v5@users.noreply.github.com'
+          git config core.longpaths true
+
+          # The exact November 5, 2026 daily build that reaches the intro.
+          $base = 'e736dfde9e'
+          git checkout --detach $base
+          if ($LASTEXITCODE -ne 0) { throw "Cannot check out fast daily baseline $base" }
+          $baseFull = (git rev-parse HEAD).Trim()
+          git switch -c b570-v5-daily-oot
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create V5 build branch' }
+
+          # The upstream PR contains all eleven commits in the following order.
+          git fetch origin '+refs/pull/614/head:refs/remotes/origin/v5-oot-pr614'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch Eglantine PR 614' }
+          $patches = @(
+            '41e7291', '245d902', '2d29137', '502e6e2',
+            'f918505', '8424eeb', '01783ce', 'a6dea8a',
+            'dc3e912', '8de2d42', 'b536a97'
+          )
+          foreach ($sha in $patches) {
+            git merge-base --is-ancestor $sha 'refs/remotes/origin/v5-oot-pr614'
+            if ($LASTEXITCODE -ne 0) { throw "Patch $sha is not in fetched PR 614" }
+            Write-Host "Applying required OOT graphics fix $sha"
+            git cherry-pick -x --empty=drop $sha
+            if ($LASTEXITCODE -ne 0) {
+              git status --short | Out-File -Encoding utf8 V5-INTEGRATION-FAILURE.txt
+              git diff --name-only --diff-filter=U | Out-File -Append -Encoding utf8 V5-INTEGRATION-FAILURE.txt
+              throw "Required graphics patch $sha failed; no build will be published"
+            }
+          }
+          $built = (git rev-parse HEAD).Trim()
+          if ($built -eq $baseFull) { throw 'V5 would be identical to the unpatched daily; refusing to publish' }
+          git diff --check $baseFull HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Diff verification failed' }
+
+          @(
+            'B570 V5: FAST 2026-11-05 DAILY + OOT GAMEPLAY RENDERER',
+            'EXPERIMENTAL: Gameplay rendering, FPS and driver stability not yet verified on Intel Arc B570',
+            "Original daily: $baseFull",
+            'Rendering: PR #614, eleven commits from first to last',
+            "Compiled source HEAD: $built",
+            'No games, keys, firmware or saves included.',
+            '', 'Source commits:'
+          ) | Out-File -Encoding utf8 B570-V5-MANIFEST.txt
+          git log --format='%h %s' -13 | Out-File -Append -Encoding utf8 B570-V5-MANIFEST.txt
+          git diff --stat $baseFull HEAD | Out-File -Append -Encoding utf8 B570-V5-MANIFEST.txt
+          "sha=$built" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Preserve integration diagnostics even if later steps fail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-V5-source-report
+          path: |
+            B570-V5-MANIFEST.txt
+            V5-INTEGRATION-FAILURE.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Set up upstream build metadata and caches
+        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        with:
+          platform: windows-x86_64
+          sha: ${{ steps.source.outputs.sha }}
+          refspec: b570-v5-daily-pr614
+          tag: b570-v5-experimental
+          release: 'false'
+
+      - name: Enable Visual Studio MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Configure optimized Release (no extra source patches)
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DUSE_DISCORD_PRESENCE=OFF
+          -DNIGHTLY_BUILD=ON
+
+      - name: Compile the Windows emulator
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+
+      - name: Bundle executable, DLLs, manifest, safe test launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = 'build/release/bin'
+          $exe = Join-Path $bin 'eglantine.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Missing eglantine.exe from compiled output' }
+          windeployqt --release --no-translations $exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt DLL deployment failed' }
+          Copy-Item 'B570-V5-MANIFEST.txt' $bin
+
+          # Cache isolation is essential: other Eglantine builds share %APPDATA%/eden.
+          $launcher = @'
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PSScriptRoot 'eglantine.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Cannot find eglantine.exe beside this launcher.' }
+          if (Get-Process -Name eglantine -ErrorAction SilentlyContinue) {
+              throw 'Close every running Eglantine instance before launching V5.'
+          }
+
+          Write-Host 'B570 V5 - EXPERIMENTAL' -ForegroundColor Cyan
+          Write-Host 'Mode 1: initial rendering test (no GPU thread splitting or fence batching)'
+          Write-Host 'Mode 2: performance test (GPU thread split=2 only)'
+          Write-Host 'Mode 3: performance test (GPU split=2 + fence batching=1; possible visual bugs)'
+          $mode = Read-Host 'Select 1, 2, or 3 [default 1]'
+          if (-not $mode) { $mode = '1' }
+          if ($mode -notin @('1', '2', '3')) { throw "Invalid mode: $mode" }
+
+          $env:EDEN_NX2_TENSOR = '0'
+          $env:EDEN_NX2_SPLIT = if ($mode -eq '1') { '0' } else { '2' }
+          $env:EDEN_NX2_FENCE_BATCH = if ($mode -eq '3') { '1' } else { '0' }
+
+          $title = '0400486024dec000'
+          $root = Join-Path $env:APPDATA 'eden\cache\shader'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $active = Join-Path $root $title
+          $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+          $backup = Join-Path $root "${title}_before_V5_$stamp"
+          $trial = Join-Path $root "${title}_V5_mode${mode}_$stamp"
+          $hadCache = Test-Path -LiteralPath $active
+          if ($hadCache) { Move-Item -LiteralPath $active -Destination $backup -ErrorAction Stop }
+
+          try {
+              Write-Host "Starting V5 Mode $mode. A new shader cache will be created."
+              $p = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -PassThru -Wait
+              Write-Host "Emulator exit code: $($p.ExitCode)"
+          } finally {
+              $reports = Join-Path $PSScriptRoot 'V5-Trial-Reports'
+              New-Item -ItemType Directory -Path $reports -Force | Out-Null
+              $log = Join-Path $env:APPDATA 'eden\log\eden_log.txt'
+              if (Test-Path -LiteralPath $log) {
+                  Copy-Item -LiteralPath $log -Destination (Join-Path $reports "V5_mode${mode}_$stamp.txt") -Force
+                  Write-Host "Log saved: $reports"
+              }
+              if (Test-Path -LiteralPath $active) {
+                  Move-Item -LiteralPath $active -Destination $trial -ErrorAction Stop
+                  Write-Host "V5 trial shader cache preserved: $trial"
+              }
+              if ($hadCache -and (Test-Path -LiteralPath $backup)) {
+                  Move-Item -LiteralPath $backup -Destination $active -ErrorAction Stop
+                  Write-Host 'Previous shader cache restored.'
+              }
+          }
+          '@
+          Set-Content -LiteralPath (Join-Path $bin 'Safe-Test-V5.ps1') -Value $launcher -Encoding UTF8
+          @(
+            '@echo off',
+            'cd /d "%~dp0"',
+            'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Safe-Test-V5.ps1"',
+            'pause'
+          ) | Set-Content -LiteralPath (Join-Path $bin 'Safe-Test-V5.cmd') -Encoding ASCII
+
+      - name: Publish B570 V5 Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-V5-Daily-PR614-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 30
