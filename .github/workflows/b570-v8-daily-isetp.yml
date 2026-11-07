@@ -54,8 +54,8 @@ jobs:
           start = "            if (!floating && insn.Bits(72, 1)) {"
           end = "            const u32 a = operand(0, floating), b = operand(1, floating);"
           for label, txt in [("daily", old), ("fork", patched_source)]:
-              if txt.count(start) != 1 or txt.count(end) != 1:
-                  raise RuntimeError(f"{label}: shader patch markers not unique")
+              if txt.count(start) != 1 or end not in txt[txt.index(start):]:
+                  raise RuntimeError(f"{label}: shader patch markers not found or start duplicated")
           old_block = old[old.index(start):old.index(end, old.index(start))]
           fixed_block = patched_source[patched_source.index(start):patched_source.index(end, patched_source.index(start))]
           if ("native extended integer comparison mode" not in old_block
