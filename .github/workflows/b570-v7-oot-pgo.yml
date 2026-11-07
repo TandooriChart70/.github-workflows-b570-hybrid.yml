@@ -1,0 +1,279 @@
+name: B570 V7 - OOT PGO performance comparison
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/b570-v7-oot-pgo.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b570-v7-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-pgo:
+    name: Windows x64 Clang PGO - OOT source
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      PLATFORM: windows-x86_64-pgo
+      SOURCE_SHA: f22ecc4ac784a4ce13fe72fb66ac78e86db0c01d
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3000M
+
+    steps:
+      - name: Checkout the exact same tested source as V6
+        uses: actions/checkout@v4
+        with:
+          repository: A-Man-With-A-Plan-dev/Eglantine
+          ref: f22ecc4ac784a4ce13fe72fb66ac78e86db0c01d
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate checkout and record source provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:SOURCE_SHA) {
+              throw "Wrong source revision: $actual (expected $env:SOURCE_SHA)"
+          }
+          foreach ($path in @(
+              'CMakeLists.txt',
+              'eglantine.profdata',
+              '.github/actions/setup-build/action.yml',
+              'OOT_WORKFLOW.md',
+              'CREDITS_OOT.md'
+          )) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required source file not found: $path"
+              }
+          }
+          $profile = Get-Item -LiteralPath 'eglantine.profdata'
+          if ($profile.Length -lt 1000) { throw 'PGO profile is suspiciously small or missing.' }
+          @(
+              'B570 V7 - OOT WINDOWS CLANG PGO / EXPERIMENTAL',
+              'A/B comparison against V6 (same source commit; different compiler and PGO)',
+              'Source: https://github.com/A-Man-With-A-Plan-dev/Eglantine',
+              'Source branch: stable/oot-playable-no-crash-2026-11-05',
+              "Source commit: $actual",
+              "PGO profile bytes: $($profile.Length)",
+              'Build: Windows 64-bit, MSYS2 UCRT64, Clang, Release, profile-use',
+              'Profile is upstream-provided, not collected on this Intel GPU',
+              'No proprietary games, firmware, or keys included',
+              'WARNING: Intel Arc B570 gameplay has NOT been validated by this workflow',
+              'GPL-3.0-or-later; refer to original project and credits'
+          ) | Set-Content -LiteralPath V7-SOURCE-MANIFEST.txt -Encoding UTF8
+          Write-Host "Source revision: $actual"
+          Write-Host "PGO profile: $($profile.Length) bytes"
+
+      - name: Preserve source manifest even if the build fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-V7-source-report
+          path: V7-SOURCE-MANIFEST.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Prepare original source's build metadata and dependency caches
+        uses: ./.github/actions/setup-build
+        with:
+          platform: windows-x86_64-pgo
+          sha: f22ecc4ac784a4ce13fe72fb66ac78e86db0c01d
+          refspec: b570-v7-oot-clang-pgo
+          tag: b570-v7-intel-arc-pgo-trial
+          release: 'false'
+
+      # This closely follows the upstream project's Windows MinGW/Clang PGO job.
+      - name: Install MSYS2 UCRT64 Clang and Qt dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            toolchain:p clang:p lld:p cmake:p python-pip:p
+            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p libiconv:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
+            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p ccache:p
+
+      - name: Verify Clang, PGO profile and Vulkan compiler
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          command -v clang
+          command -v clang++
+          command -v llvm-profdata
+          command -v glslangValidator
+          test -s eglantine.profdata
+          clang++ --version
+          llvm-profdata show eglantine.profdata >/dev/null
+          echo 'PGO profile is readable by the installed LLVM toolchain.'
+
+      - name: Configure Release with the upstream PGO profile
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") -Wno-backend-plugin -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          cmake -S . -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DYUZU_TESTS=OFF \
+            -DYUZU_CMD=ON \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF \
+            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON \
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_CCACHE=ON \
+            -DNIGHTLY_BUILD=ON \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            "-DCMAKE_C_FLAGS=$profile" \
+            "-DCMAKE_CXX_FLAGS=$profile"
+
+      - name: Compile with PGO and verify both executables
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+          test -s build/release/bin/eglantine.exe
+          test -s build/release/bin/eden-cli.exe
+          ccache --show-stats || true
+
+      - name: Deploy Windows Qt and all non-system dependent DLLs
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:$PATH"
+          cd build/release/bin
+          test -s eglantine.exe
+          test -s eden-cli.exe
+          windeployqt6 --no-translations --no-compiler-runtime --no-opengl-sw \
+            --no-system-dxc-compiler --no-system-d3d-compiler eglantine.exe
+          deps() {
+            objdump -p "$1" | awk '/DLL Name:/ {print $3}' | while read -r dll; do
+              [ -n "$dll" ] || continue
+              source=$(command -v "$dll" 2>/dev/null || true)
+              [ -n "$source" ] || continue
+              case "$source" in
+                *System32* | *SysWOW64*) continue ;;
+              esac
+              if [ ! -f "$dll" ]; then
+                cp "$source" "$dll"
+                deps "$source"
+              fi
+            done
+          }
+          for exe in eglantine.exe eden-cli.exe; do
+            deps "$exe"
+          done
+          while IFS= read -r dll; do
+            deps "$dll"
+          done < <(find . -type f -name '*.dll')
+          echo 'Bundled DLL count:'
+          find . -type f -name '*.dll' | wc -l
+
+      - name: Package provenance and benchmark launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = 'build/release/bin'
+          if (-not (Test-Path -LiteralPath "$bin/eglantine.exe")) { throw 'No built emulator executable.' }
+          if (-not (Test-Path -LiteralPath "$bin/eden-cli.exe")) { throw 'No CLI executable.' }
+          Copy-Item 'V7-SOURCE-MANIFEST.txt' -Destination $bin -Force
+          foreach ($doc in @('CREDITS_OOT.md','OOT_WORKFLOW.md','OOT_HELP_WANTED.md','COPYING','COPYING.md','LICENSE','LICENSE.md')) {
+              if (Test-Path -LiteralPath $doc) { Copy-Item -LiteralPath $doc -Destination $bin -Force }
+          }
+          $hash = (Get-FileHash -LiteralPath "$bin/eglantine.exe" -Algorithm SHA256).Hash
+          "eglantine.exe SHA256: $hash" | Add-Content -LiteralPath "$bin/V7-SOURCE-MANIFEST.txt"
+
+          $launcher = @'
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PSScriptRoot 'eglantine.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Missing eglantine.exe next to Safe-Test-V7.cmd.' }
+          if (Get-Process -Name eglantine -ErrorAction SilentlyContinue) {
+              throw 'Close other Eglantine processes first: builds share a shader cache and configuration.'
+          }
+          Write-Host 'B570 V7 - CLANG PGO EXPERIMENT' -ForegroundColor Cyan
+          Write-Host '1 - Upstream performance settings (test first)'
+          Write-Host '2 - Disable split GPU thread (separate stability test)'
+          Write-Host '3 - GPU profiling (diagnostic mode; may lower FPS)'
+          $mode = Read-Host 'Select 1, 2 or 3 [default 1]'
+          if ([string]::IsNullOrWhiteSpace($mode)) { $mode = '1' }
+          if ($mode -notin @('1','2','3')) { throw "Invalid mode: $mode" }
+
+          # Do not inherit overrides from earlier Eglantine experiments.
+          foreach ($name in @(
+              'EDEN_NX2_SPLIT','EDEN_NX2_TENSOR','EDEN_NX2_FENCE_BATCH',
+              'EDEN_NX2_GPU_PROFILE','EDEN_NX2_PREFLUSH',
+              'EDEN_NX2_PERF_OFF','EDEN_NX2_PERF_VERIFY'
+          )) {
+              Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+          }
+          if ($mode -eq '2') { $env:EDEN_NX2_SPLIT = '0' }
+          if ($mode -eq '3') { $env:EDEN_NX2_GPU_PROFILE = '1' }
+
+          $cacheRoot = Join-Path $env:APPDATA 'eden\cache\shader'
+          $titleId = '0400486024dec000'
+          New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
+          $active = Join-Path $cacheRoot $titleId
+          $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+          $oldCache = Join-Path $cacheRoot "${titleId}_before_V7_$stamp"
+          $newCache = Join-Path $cacheRoot "${titleId}_V7_mode${mode}_$stamp"
+          $oldMoved = $false
+          try {
+              if (Test-Path -LiteralPath $active) {
+                  Move-Item -LiteralPath $active -Destination $oldCache -ErrorAction Stop
+                  $oldMoved = $true
+              }
+              Write-Host "Starting test mode $mode. Existing shader cache is preserved."
+              $process = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -PassThru -Wait
+              Write-Host "Emulator exit code: $($process.ExitCode)"
+          } finally {
+              $reportDir = Join-Path $PSScriptRoot 'V7-Trial-Reports'
+              New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+              $log = Join-Path $env:APPDATA 'eden\log\eden_log.txt'
+              if (Test-Path -LiteralPath $log) {
+                  $destination = Join-Path $reportDir "V7_mode${mode}_$stamp.txt"
+                  Copy-Item -LiteralPath $log -Destination $destination -Force
+                  Write-Host "Saved log: $destination"
+              }
+              if (Test-Path -LiteralPath $active) {
+                  Move-Item -LiteralPath $active -Destination $newCache -ErrorAction Stop
+                  Write-Host "Saved new V7 shader cache: $newCache"
+              }
+              if ($oldMoved -and (Test-Path -LiteralPath $oldCache)) {
+                  Move-Item -LiteralPath $oldCache -Destination $active -ErrorAction Stop
+                  Write-Host 'Restored previous shader cache.'
+              }
+          }
+          '@
+          Set-Content -LiteralPath "$bin/Safe-Test-V7.ps1" -Value $launcher -Encoding UTF8
+          @(
+            '@echo off',
+            'cd /d "%~dp0"',
+            'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Safe-Test-V7.ps1"',
+            'pause'
+          ) | Set-Content -LiteralPath "$bin/Safe-Test-V7.cmd" -Encoding ASCII
+
+      - name: Publish portable V7 Windows PGO build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-V7-OOT-Clang-PGO-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 30
