@@ -98,7 +98,7 @@ jobs:
           install: >-
             git make autoconf libtool automake-wrapper patch jq pactoys ninja
           pacboy: >-
-            toolchain:p clang:p lld:p cmake:p python-pip:p
+            toolchain:p clang:p lld:p llvm-tools:p cmake:p python-pip:p
             qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
             openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p libiconv:p
             vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
