@@ -1,0 +1,239 @@
+name: B570 V8 - Original daily + targeted ISETP.EX shader fix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/b570-v8-daily-isetp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b570-v8-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build original daily with ONE shader translation change
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      PLATFORM: windows-x86_64
+      BASE_SHA: e736dfde9e
+      PATCH_SOURCE_SHA: f22ecc4ac784a4ce13fe72fb66ac78e86db0c01d
+
+    steps:
+      - name: Check out exact November 5 original daily source
+        uses: actions/checkout@v4
+        with:
+          repository: Djihads80/Eglantine
+          ref: e736dfde9e
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Transplant only the known ISETP.EX extension from pinned fork
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --short=10 HEAD)" = "e736dfde9e"
+          python - <<'PY'
+          from pathlib import Path
+          from urllib.request import urlopen
+          import os
+
+          path = Path("src/shader_recompiler/frontend/ampere/lower_to_maxwell.h")
+          old = path.read_text(encoding="utf-8")
+          fork_sha = os.environ["PATCH_SOURCE_SHA"]
+          url = ("https://raw.githubusercontent.com/A-Man-With-A-Plan-dev/Eglantine/"
+                 + fork_sha + "/" + path.as_posix())
+          with urlopen(url, timeout=90) as r:
+              patched_source = r.read().decode("utf-8")
+
+          start = "            if (!floating && insn.Bits(72, 1)) {"
+          end = "            const u32 a = operand(0, floating), b = operand(1, floating);"
+          for label, txt in [("daily", old), ("fork", patched_source)]:
+              if txt.count(start) != 1 or txt.count(end) != 1:
+                  raise RuntimeError(f"{label}: shader patch markers not unique")
+          old_block = old[old.index(start):old.index(end, old.index(start))]
+          fixed_block = patched_source[patched_source.index(start):patched_source.index(end, patched_source.index(start))]
+          if ("native extended integer comparison mode" not in old_block
+                  or "insn.Bits(87, 4) != 7" not in old_block
+                  or "const u32 accumulate = insn.Bits(87, 4)" not in fixed_block
+                  or "0x5090000000000000ULL" not in fixed_block
+                  or len(fixed_block) < len(old_block)):
+              raise RuntimeError("Unexpected upstream source: refusing to build unverified patch")
+          result = old.replace(old_block, fixed_block, 1)
+          if result == old:
+              raise RuntimeError("No change made")
+          path.write_text(result, encoding="utf-8", newline="\n")
+          print(f"Patched {path}: original {len(old_block)} bytes, replacement {len(fixed_block)} bytes")
+          print("Only the ISETP.EX predicate comparison lowering block was replaced.")
+          PY
+          git diff --check
+          test "$(git diff --name-only | wc -l)" -eq 1
+          test "$(git diff --name-only)" = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
+          git diff --stat
+          {
+            echo 'B570 V8 - ORIGINAL 2026-11-05 DAILY + ONE TARGETED SHADER FIX'
+            echo 'EXPERIMENTAL: NOT TESTED INSIDE ZELDA ON INTEL ARC B570'
+            echo "Base: Djihads80/Eglantine at $(git rev-parse HEAD)"
+            echo "Targeted ISETP.EX block: A-Man-With-A-Plan-dev/Eglantine at $PATCH_SOURCE_SHA"
+            echo 'Compiler: MSVC; FFmpeg: bundled ffmpeg-ci-av1 (AV1-capable)'
+            echo 'Runtime launch: EDEN_NX2_SPLIT=0, no tensor emulation, no fence batching'
+            echo 'Existing game installation, saves, and original emulator are left untouched'
+            echo 'Source difference:'
+            git diff --stat
+          } > B570-V8-MANIFEST.txt
+
+      - name: Prove AV1-enabled FFmpeg is selected for MSVC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ffmpeg = Get-Content 'externals/ffmpeg/CMakeLists.txt' -Raw
+          if ($ffmpeg -notmatch 'if \(\(MSVC OR LINUX\) AND CPMUTIL_AMD64\)' -or
+              $ffmpeg -notmatch 'AddJsonPackage\(ffmpeg-ci-av1\)') {
+            throw 'AV1-enabled Windows FFmpeg dependency not configured; fail closed'
+          }
+          Write-Host 'Bundled AV1 source configuration verified.'
+
+      - name: Record manifest even if compilation fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-V8-source-report
+          path: B570-V8-MANIFEST.txt
+          if-no-files-found: ignore
+
+      - name: Configure original daily build metadata and dependencies
+        uses: ./.github/actions/setup-build
+        with:
+          platform: windows-x86_64
+          sha: e736dfde9e
+          refspec: b570-v8-daily-isetp-experimental
+          tag: b570-v8-one-shader-patch
+          release: 'false'
+
+      - name: Enable MSVC developer tools
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt 6.8.3 (same as original daily)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Configure MSVC Release
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DUSE_DISCORD_PRESENCE=OFF
+          -DNIGHTLY_BUILD=ON
+
+      - name: Compile emulator GUI and CLI
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+
+      - name: Package build with local gameplay test and automatic log capture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = 'build/release/bin'
+          $exe = Join-Path $bin 'eglantine.exe'
+          if (-not (Test-Path $exe)) { throw 'Compilation did not produce eglantine.exe' }
+          windeployqt --release --no-translations $exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt dependency packaging failed' }
+          Copy-Item B570-V8-MANIFEST.txt -Destination $bin -Force
+
+          $launcher = @'
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PSScriptRoot 'eglantine.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Missing eglantine.exe beside test script' }
+          if (Get-Process -Name eglantine -ErrorAction SilentlyContinue) {
+              throw 'Close every Eglantine instance first: all builds share the Eden config/cache.'
+          }
+          $env:EDEN_NX2_SPLIT = '0'
+          Remove-Item Env:EDEN_NX2_TENSOR -ErrorAction SilentlyContinue
+          Remove-Item Env:EDEN_NX2_FENCE_BATCH -ErrorAction SilentlyContinue
+
+          # Isolate V8 shader cache from the working original; preserve cache between V8 runs.
+          $root = Join-Path $env:APPDATA 'eden\cache\shader'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $id = '0400486024dec000'
+          $active = Join-Path $root $id
+          $v8 = Join-Path $root "$($id)_V8_isetp_persistent"
+          $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+          $backup = Join-Path $root "$($id)_before_V8_$stamp"
+          $hadOriginal = Test-Path -LiteralPath $active
+          if ($hadOriginal) { Move-Item -LiteralPath $active -Destination $backup -ErrorAction Stop }
+          try {
+              if (Test-Path -LiteralPath $v8) { Move-Item -LiteralPath $v8 -Destination $active -ErrorAction Stop }
+              Write-Host 'V8 targeted ISETP shader experiment - NOT yet verified in game' -ForegroundColor Cyan
+              Write-Host 'Start Zelda in GUI and test whether Link + the 3D world appear.'
+              Write-Host 'When finished, close Eglantine normally; a report is captured automatically.'
+              $p = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -PassThru -Wait
+              Write-Host "Exit code: $($p.ExitCode)"
+          } finally {
+              $reports = Join-Path $PSScriptRoot 'V8-Trial-Reports'
+              New-Item -ItemType Directory -Path $reports -Force | Out-Null
+              $log = Join-Path $env:APPDATA 'eden\log\eden_log.txt'
+              if (Test-Path -LiteralPath $log) {
+                  try {
+                      $read = [System.IO.File]::Open($log, 'Open', 'Read', 'ReadWrite')
+                      try {
+                          $write = [System.IO.File]::Create((Join-Path $reports "V8_$stamp.txt"))
+                          try { $read.CopyTo($write) } finally { $write.Dispose() }
+                      } finally { $read.Dispose() }
+                      Write-Host "Test log saved to $reports"
+                  } catch { Write-Warning "Could not copy emulator log: $_" }
+              }
+              if (Test-Path -LiteralPath $active) {
+                  if (Test-Path -LiteralPath $v8) { throw "V8 cache already exists unexpectedly: $v8" }
+                  Move-Item -LiteralPath $active -Destination $v8 -ErrorAction Stop
+              }
+              if ($hadOriginal -and (Test-Path -LiteralPath $backup)) {
+                  Move-Item -LiteralPath $backup -Destination $active -ErrorAction Stop
+                  Write-Host 'Original shader cache restored.'
+              }
+          }
+          '@
+          Set-Content -Path (Join-Path $bin 'Safe-Test-V8.ps1') -Value $launcher -Encoding UTF8
+          @(
+            '@echo off',
+            'cd /d "%~dp0"',
+            'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Safe-Test-V8.ps1"',
+            'pause'
+          ) | Set-Content -Path (Join-Path $bin 'Safe-Test-V8.cmd') -Encoding ASCII
+
+      - name: Fail if emulator or test launcher is absent
+        shell: pwsh
+        run: |
+          foreach ($file in @('build/release/bin/eglantine.exe', 'build/release/bin/Safe-Test-V8.cmd', 'build/release/bin/Safe-Test-V8.ps1')) {
+            if (-not (Test-Path $file)) { throw "Build missing $file" }
+          }
+          Write-Host 'Build package sanity check passed; Zelda gameplay still requires local Intel Arc test.'
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-V8-Daily-ISETP-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 30
