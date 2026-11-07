@@ -1,5 +1,5 @@
 
-name: B570 Hybrid V4 - Fast Eglantine plus Lichii 93
+name: B570 Hybrid V4 - Eglantine plus real Lichii 93 fixes
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    name: Build V4 Windows x64 (experimental)
+    name: Compile V4 Windows x64 (experimental)
     runs-on: windows-2022
     timeout-minutes: 180
     env:
@@ -24,132 +24,170 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Integrate Zelda fixes and selected Lichii 93 shaders
+      - name: Combine fast Eglantine and real Build 93 commits
         id: hybrid
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          git config user.name 'B570 V4 Builder'
-          git config user.email 'b570-v4@users.noreply.github.com'
+          git config user.name 'B570 Hybrid Builder'
+          git config user.email 'b570-hybrid@users.noreply.github.com'
           git config core.longpaths true
 
-          # The exact baseline used in the successful V1 source build.
+          # Exact fast source used by the successful V1 build.
           git checkout --detach 70fa082312
-          if ($LASTEXITCODE -ne 0) { throw 'Fast Eglantine baseline unavailable.' }
-          git switch -c b570-v4-lichii93
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot create V4 test branch.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Fast baseline unavailable.' }
+          git switch -c b570-v4-lichii93-corrected
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot create integration branch.' }
 
+          # Keep the same black-scene fixes as V1.
           git fetch origin '+refs/pull/614/head:refs/remotes/origin/oot-rendering'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch required Eglantine PR 614.' }
-          $renderPatches = @(
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch Eglantine PR 614.' }
+
+          $required = @(
             '41e7291', '245d902', '2d29137', '502e6e2',
             'f918505', '8424eeb', '01783ce', 'a6dea8a',
             'dc3e912', '8de2d42', 'b536a97'
           )
-          foreach ($sha in $renderPatches) {
-            Write-Host "Applying required Zelda patch $sha"
+
+          foreach ($sha in $required) {
+            Write-Host "Applying V1 rendering fix $sha"
             git cherry-pick -x --empty=drop $sha
             if ($LASTEXITCODE -ne 0) {
-              git status --short | Out-File -Encoding utf8 v4-integration-error.txt
-              throw "Required rendering fix failed: $sha"
+              throw "Required Eglantine fix failed: $sha"
             }
           }
+
           $v1rev = (git rev-parse HEAD).Trim()
 
-          # Fetch and VERIFY the precise published Build 93 snapshot.
+          # Build 93's verified release commit.
           git remote add lichii https://github.com/zortos293/Lichii.git
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot add Lichii source remote.' }
-          git fetch --no-tags lichii '+refs/tags/build-93:refs/tags/b570-lichii93'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch Lichii Build 93.' }
-          $releaseRef = (git rev-parse 'refs/tags/b570-lichii93^{commit}').Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $releaseRef.StartsWith('09b78bd')) {
-            throw "Lichii release revision mismatch: $releaseRef"
-          }
-          Write-Host "Pinned Lichii Build 93: $releaseRef"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot add Lichii source.' }
 
-          # Select shader fixes only; skip GPU thread rewrites and whole-fork merges.
-          $fixes = @(
-            @{ Sha='3aa89d1'; Label='Comparisons, reductions and atomics' },
-            @{ Sha='35c043b'; Label='Compute and high-register operations' },
-            @{ Sha='a4cc1e6'; Label='CALL, shifts and uniform operations' },
-            @{ Sha='18e4efb'; Label='Guarded uniform comparisons and SEL' },
-            @{ Sha='4435506'; Label='SHF.R U64 immediate fix' },
-            @{ Sha='6c1dd4e'; Label='Native half-source sign fix' }
+          git fetch --no-tags lichii '+refs/tags/build-93:refs/tags/b570-lichii93-test'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch Lichii Build 93.' }
+
+          $release = (git rev-parse 'refs/tags/b570-lichii93-test^{commit}').Trim()
+
+          if ($LASTEXITCODE -ne 0 -or -not $release.StartsWith('09b78bd')) {
+            throw "Unexpected Build 93 revision: $release"
+          }
+
+          Write-Host "Verified Build 93 commit: $release"
+
+          # Actual Build 93 source changes.
+          # Test performance and rendering patches individually.
+          $candidates = @(
+            @{
+              Sha='5b89a3d'
+              Label='Preserve occlusion queries across Vulkan submits'
+            },
+            @{
+              Sha='7c0b5e7'
+              Label='Cache continuous GPU buffer ranges'
+            },
+            @{
+              Sha='27226d2'
+              Label='Skip overwritten render-target uploads'
+            },
+            @{
+              Sha='f356d39'
+              Label='Additional Ocarina shader forms'
+            }
           )
+
           $applied = [System.Collections.Generic.List[string]]::new()
           $skipped = [System.Collections.Generic.List[string]]::new()
 
-          foreach ($fix in $fixes) {
-            $sha = $fix.Sha
-            $label = $fix.Label
-            git cat-file -e "${sha}^{commit}" 2>$null
+          foreach ($item in $candidates) {
+            $sha = $item.Sha
+            $label = $item.Label
+
+            # Verify that this commit belongs to Build 93.
+            git merge-base --is-ancestor $sha $release
+
             if ($LASTEXITCODE -ne 0) {
-              $skipped.Add("${sha}: absent from fetched source")
-              continue
-            }
-            git merge-base --is-ancestor $sha $releaseRef
-            if ($LASTEXITCODE -ne 0) {
-              $skipped.Add("${sha}: not part of Build 93")
+              $skipped.Add("${sha}: not in Build 93")
               continue
             }
 
             $before = (git rev-parse HEAD).Trim()
-            Write-Host "Testing ${sha}: $label"
+
+            Write-Host "Trying ${sha}: $label"
+
             git cherry-pick -x --empty=drop $sha
+
             if ($LASTEXITCODE -eq 0) {
               $after = (git rev-parse HEAD).Trim()
+
               if ($after -ne $before) {
                 $applied.Add("${sha}: $label")
               } else {
                 $skipped.Add("${sha}: already present")
               }
             } else {
+              Write-Host "Skipping incompatible change $sha"
+
               git cherry-pick --abort
-              if ($LASTEXITCODE -ne 0) { throw "Failed to abort patch $sha" }
+
+              if ($LASTEXITCODE -ne 0) {
+                throw "Could not abort $sha"
+              }
+
               $pending = @(git status --porcelain)
-              if ($pending.Count -ne 0) { throw "Dirty tree after aborting $sha" }
+
+              if ($pending.Count -gt 0) {
+                throw "Unclean repository after $sha"
+              }
+
               $skipped.Add("${sha}: source conflict")
             }
           }
 
           $revision = (git rev-parse HEAD).Trim()
+
           @(
-            'B570 V4 - FAST EGLANTINE + SELECTED LICHII BUILD 93 FIXES',
-            'EXPERIMENTAL: gameplay and FPS not verified',
-            'Eglantine baseline: 70fa082312',
-            "After PR 614: $v1rev",
-            "Lichii release: $releaseRef",
-            "Hybrid revision: $revision",
+            'B570 V4 - EXPERIMENTAL (NOT GAMEPLAY TESTED)',
+            'Base Eglantine: 70fa082312',
+            "Eglantine V1 rendering source: $v1rev",
+            "Pinned Lichii Build 93: $release",
+            "Hybrid source: $revision",
             '',
-            'Applied:',
+            'Actually applied:',
             ($applied | Out-String),
             'Skipped:',
             ($skipped | Out-String),
-            'No game files, keys, firmware or saves included.'
+            'Game files, encryption keys, saves and firmware are not included.'
           ) | Out-File -Encoding utf8 B570-V4-MANIFEST.txt
-          git diff --stat $v1rev HEAD | Out-File -Append -Encoding utf8 B570-V4-MANIFEST.txt
+
+          git diff --stat $v1rev HEAD |
+            Out-File -Append -Encoding utf8 B570-V4-MANIFEST.txt
 
           if ($applied.Count -eq 0) {
-            throw 'No additional Lichii commits applied. Refusing to rebuild V1 unchanged.'
+            throw 'No additional Build 93 changes applied; refusing to relabel V1 as V4.'
           }
-          git diff --check $v1rev HEAD
-          if ($LASTEXITCODE -ne 0) { throw 'Whitespace or patch errors detected.' }
-          $untracked = @(git status --porcelain)
-          if ($untracked.Count -ne 1 -or $untracked[0] -ne '?? B570-V4-MANIFEST.txt') {
-            git status --short
-            throw 'Unexpected working-tree modifications.'
-          }
-          "sha=$revision" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "Applied $($applied.Count) Lichii patches; building $revision"
 
-      - name: Upload integration report even on failure
+          git diff --check $v1rev HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Diff check failed.'
+          }
+
+          $status = @(git status --porcelain)
+
+          if ($status.Count -ne 1 -or $status[0] -ne '?? B570-V4-MANIFEST.txt') {
+            git status --short
+            throw 'Unexpected working tree modifications.'
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "sha=$revision" -Encoding utf8
+
+          Write-Host "V4 integration complete: $($applied.Count) new patch(es)."
+
+      - name: Upload source report even on failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: B570-V4-source-report
-          path: |
-            B570-V4-MANIFEST.txt
-            v4-integration-error.txt
+          name: B570-V4-integration-report
+          path: B570-V4-MANIFEST.txt
           if-no-files-found: ignore
 
       - name: Set up Eglantine build
@@ -157,14 +195,14 @@ jobs:
         with:
           platform: windows-x86_64
           sha: ${{ steps.hybrid.outputs.sha }}
-          refspec: b570-lichii93-v4
-          tag: b570-lichii93-v4
+          refspec: b570-v4-lichii93-fixed
+          tag: b570-v4-lichii93-test
           release: 'false'
 
       - name: Enable MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install Qt 6.8.3
+      - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
@@ -178,7 +216,7 @@ jobs:
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
 
-      - name: Configure Release build
+      - name: Configure Windows build
         shell: bash
         run: >-
           cmake -S . -B build/release -G Ninja
@@ -194,63 +232,38 @@ jobs:
           -DUSE_DISCORD_PRESENCE=OFF
           -DNIGHTLY_BUILD=ON
 
-      - name: Compile Windows emulator
+      - name: Compile and save error log
         shell: bash
-        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+        run: |
+          set -o pipefail
+          cmake --build build/release --target yuzu yuzu-cmd --parallel 4 2>&1 | tee b570-v4-compile.log
 
-      - name: Package Windows emulator and test launcher
+      - name: Upload compilation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-V4-compile-log
+          path: b570-v4-compile.log
+          if-no-files-found: ignore
+
+      - name: Package emulator
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $bin = 'build/release/bin'
-          $exe = Join-Path $bin 'eglantine.exe'
-          if (-not (Test-Path $exe)) { throw 'Build did not produce eglantine.exe.' }
+          $exe = 'build/release/bin/eglantine.exe'
+
+          if (-not (Test-Path $exe)) {
+            throw 'No eglantine.exe was produced.'
+          }
+
           windeployqt --release --no-translations $exe
-          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed.' }
-          Copy-Item B570-V4-MANIFEST.txt $bin
 
-          $launcher = @'
-          $ErrorActionPreference = 'Stop'
-          $exe = Join-Path $PSScriptRoot 'eglantine.exe'
-          if (-not (Test-Path $exe)) { throw 'Missing eglantine.exe.' }
-          if (Get-Process -Name eglantine -ErrorAction SilentlyContinue) {
-            throw 'Close every other Eglantine instance before testing.'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Qt deployment failed.'
           }
-          $root = Join-Path $env:APPDATA 'eden\cache\shader'
-          $title = '0400486024dec000'
-          $active = Join-Path $root $title
-          $stamp = Get-Date -Format 'yyyyMMdd_HHmmss_fff'
-          $backup = Join-Path $root "${title}_before_v4_$stamp"
-          $trial = Join-Path $root "${title}_v4_trial_$stamp"
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-          $hadCache = Test-Path $active
-          if ($hadCache) { Move-Item $active $backup }
-          try {
-            $p = Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot -PassThru
-            $p.WaitForExit()
-          } finally {
-            if (Test-Path $active) {
-              Move-Item $active $trial
-              Write-Host "V4 shader cache archived: $trial"
-            }
-            if ($hadCache -and (Test-Path $backup)) {
-              Move-Item $backup $active
-              Write-Host 'Previous shader cache restored.'
-            }
-            $log = Join-Path $env:APPDATA 'eden\log\eden_log.txt'
-            if (Test-Path $log) {
-              $reports = Join-Path $PSScriptRoot 'Trial-Reports'
-              New-Item -ItemType Directory -Force -Path $reports | Out-Null
-              Copy-Item $log (Join-Path $reports "v4_$stamp.log")
-              Write-Host "Emulator log saved in: $reports"
-            }
-          }
-          '@
-          Set-Content -Path (Join-Path $bin 'Safe-Test-V4.ps1') -Value $launcher -Encoding utf8
-          @('@echo off', 'cd /d "%~dp0"', 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Safe-Test-V4.ps1"', 'pause') |
-            Set-Content -Path (Join-Path $bin 'Safe-Test-V4.cmd') -Encoding ascii
 
-      - name: Upload executable and dependencies
+          Copy-Item B570-V4-MANIFEST.txt build/release/bin/
+
+      - name: Upload V4 emulator
         uses: actions/upload-artifact@v4
         with:
           name: B570-Hybrid-V4-Lichii93-Windows-x64
