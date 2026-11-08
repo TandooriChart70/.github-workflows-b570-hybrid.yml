@@ -1,0 +1,191 @@
+name: B570 V75-V77 V54 targeted ASTC foliage diagnostics
+on:
+  push:
+    paths:
+      - '.github/workflows/b570-v75-v77-v54-foliage-astc.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-variants:
+    name: Build ${{ matrix.version }} (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {version: V75, source_repo: 'Djihads80/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', decode: 'Cpu', recompress: 'Bc3', fence_us: 500, family: 'V54-ASTC', label: 'CPU-decode-BC3'}
+          - {version: V76, source_repo: 'Djihads80/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', decode: 'Gpu', recompress: 'Uncompressed', fence_us: 500, family: 'V54-ASTC', label: 'GPU-decode-uncompressed'}
+          - {version: V77, source_repo: 'Djihads80/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', decode: 'CpuAsynchronous', recompress: 'Bc3', fence_us: 500, family: 'V54-ASTC', label: 'async-CPU-decode-BC3'}
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      TEST_VERSION: ${{ matrix.version }}
+      FENCE_US: ${{ matrix.fence_us }}
+      FEATURES: 'none'
+      SOURCE_REPO: ${{ matrix.source_repo }}
+      BASE_SHA: ${{ matrix.source_sha }}
+      FAMILY: ${{ matrix.family }}
+      DECODE_MODE: ${{ matrix.decode }}
+      RECOMP_MODE: ${{ matrix.recompress }}
+      PLATFORM: windows-x86_64
+    steps:
+      - name: Checkout pinned Eglantine daily
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.source_repo }}
+          ref: ${{ matrix.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Apply isolated V54 ASTC experiment to OOT preset only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("src/common/game_presets.h")
+          src = path.read_text(encoding="utf-8")
+          marker = "inline void SetOcarinaOfTimeRecommendedSettings("
+          end = "inline bool ApplyOcarinaOfTimePreset("
+          if src.count(marker) != 1 or src.count(end) != 1:
+              raise RuntimeError("OOT preset scope not unique; do not patch")
+          a, b = src.index(marker), src.index(end)
+          oot = src[a:b]
+          anchor = "    session(settings.use_asynchronous_shaders, true);\n"
+          if oot.count(anchor) != 1:
+              raise RuntimeError("OOT async shader anchor unexpected")
+          decode = os.environ["DECODE_MODE"]
+          recompress = os.environ["RECOMP_MODE"]
+          if decode not in ("Cpu", "Gpu", "CpuAsynchronous") or recompress not in ("Bc3", "Uncompressed"):
+              raise RuntimeError("Unknown ASTC variant")
+          oot = oot.replace(anchor, anchor +
+              "    session(settings.accelerate_astc, AstcDecodeMode::" + decode + ");\n", 1)
+          old = "    session(settings.astc_recompression, AstcRecompression::Bc3);"
+          if oot.count(old) != 1:
+              raise RuntimeError("OOT BC3 preset anchor unexpected")
+          oot = oot.replace(old,
+              "    session(settings.astc_recompression, AstcRecompression::" + recompress + ");", 1)
+          updated = src[:a] + oot + src[b:]
+          if updated == src:
+              raise RuntimeError("No source changed")
+          path.write_text(updated, encoding="utf-8", newline="\n")
+          print(f"OOT-only ASTC diagnostic: decode={decode}, recompress={recompress}")
+          PY
+          git diff --check
+          test "$(git diff --name-only)" = "src/common/game_presets.h"
+          git diff --stat
+      - name: Write source provenance manifest
+        shell: bash
+        run: |
+          {
+            echo "Variant: $TEST_VERSION"
+            echo "Family: $FAMILY"
+            echo "Source repository: $SOURCE_REPO"
+            echo "Source commit: $(git rev-parse HEAD)"
+            echo "Fence default requested: $FENCE_US us"
+            echo "OOT ASTC decode mode: $DECODE_MODE"
+            echo "OOT ASTC recompression mode: $RECOMP_MODE"
+            echo 'Only game_presets.h OOT preset is edited, V54 source and 500us fence retained'
+            echo 'User data, games, keys and firmware not included'
+            echo 'Game rendering and stability NOT verified on Intel Arc B570'
+            git diff --stat
+          } > B570-EXPERIMENT-MANIFEST.txt
+      - name: Setup build metadata and caches
+        uses: ./.github/actions/setup-build
+        with:
+          platform: windows-x86_64
+          sha: ${{ matrix.source_sha }}
+          refspec: b570-${{ matrix.version }}-original-daily
+          tag: b570-${{ matrix.version }}-isolated
+          release: 'false'
+      - name: Enable MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+      - name: Install and verify NASM assembler for OpenSSL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nasm --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
+          $nasmDir = 'C:\Program Files\NASM'
+          if (-not (Test-Path "$nasmDir\nasm.exe")) { throw 'NASM executable missing after installation' }
+          $nasmDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$nasmDir\nasm.exe" -v
+      - name: Verify NASM assembler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmd = Get-Command nasm -ErrorAction Stop
+          Write-Host "NASM resolved to $($cmd.Source)"
+          nasm -v
+      - name: Configure Windows build (source SDL3 and OpenSSL fallback)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $args = @(
+            '-S', '.', '-B', 'build/release', '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            '-DBUILD_TESTING=OFF',
+            '-DYUZU_TESTS=OFF',
+            '-DYUZU_CMD=ON',
+            '-DYUZU_ROOM=OFF',
+            '-DYUZU_ROOM_STANDALONE=OFF',
+            '-DYUZU_USE_BUNDLED_QT=OFF',
+            '-DYUZU_USE_BUNDLED_SDL3=OFF',
+            '-DYUZU_USE_BUNDLED_SIRIT=OFF',
+            '-DENABLE_UPDATE_CHECKER=OFF',
+            '-DUSE_DISCORD_PRESENCE=OFF',
+            '-DNIGHTLY_BUILD=ON',
+            '-DYUZU_USE_BUNDLED_OPENSSL=OFF'
+          )
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "CMake configure attempt $attempt/3 (source SDL3 and OpenSSL; avoid missing prebuilt CI assets)"
+            & cmake @args
+            if ($LASTEXITCODE -eq 0) { Write-Host 'CMake configure succeeded'; exit 0 }
+            if ($attempt -eq 3) { throw 'CMake configuration failed after 3 attempts; inspect the first dependency error above' }
+            Start-Sleep -Seconds (15 * $attempt)
+          }
+      - name: Compile
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+      - name: Verify AV1 dependency configuration
+        shell: pwsh
+        run: |
+          $ffmpeg = Get-Content 'externals/ffmpeg/CMakeLists.txt' -Raw
+          if ($ffmpeg -notmatch 'AddJsonPackage\(ffmpeg-ci-av1\)') { throw 'AV1 FFmpeg dependency not configured' }
+      - name: Package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/release/bin/eglantine.exe)) { throw 'Executable missing' }
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          Copy-Item B570-EXPERIMENT-MANIFEST.txt build/release/bin/
+          if (Test-Path build/release/bin/eglantine.pdb) { Write-Host 'PDB included' }
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-ASTC-${{ matrix.label }}-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload manifest even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-source-report
+          path: B570-EXPERIMENT-MANIFEST.txt
+          if-no-files-found: ignore
