@@ -1,0 +1,147 @@
+name: B570 V57-V64 OOT source fix isolation
+on:
+  push:
+    paths:
+      - '.github/workflows/b570-v57-v64-isolation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-variants:
+    name: Build ${{ matrix.version }} - ${{ matrix.fix }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {version: V57, source_repo: 'A-Man-With-A-Plan-dev/Eglantine', source_sha: 'b536a971a54524ef271be60baef830e368529797', fix: 'PR614-upscale'}
+          - {version: V58, source_repo: 'Djihads80/Eglantine', source_sha: '031e07436c77de3fac223eb7be31b19e4f39e757', fix: 'uniform-bank'}
+          - {version: V59, source_repo: 'Djihads80/Eglantine', source_sha: 'e88024e6b01a700330404c455d3c909bcce226fe', fix: 'software-HMMA'}
+          - {version: V60, source_repo: 'Djihads80/Eglantine', source_sha: '226f92afdb0faf33422e93e996e09a4a97bbb2ff', fix: 'occlusion-flash'}
+          - {version: V61, source_repo: 'Djihads80/Eglantine', source_sha: '53c1fa18b4f0285fbefeabb7589e7c4b35a65dbe', fix: 'pipeline-failure'}
+          - {version: V62, source_repo: 'Djihads80/Eglantine', source_sha: '7d26d3b2fbec17d0c7a7fdf6d6ebc76d0081a2c6', fix: 'render-target-clear'}
+          - {version: V63, source_repo: 'Djihads80/Eglantine', source_sha: '743d5bbaed880a27ebd2cef7795a2289c7b60a88', fix: 'mesh-points-lines'}
+          - {version: V64, source_repo: 'Djihads80/Eglantine', source_sha: '8dafde5150c6585edd7b520b82c1103b49e9f696', fix: 'vegetation-diagnostic'}
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      TEST_VERSION: ${{ matrix.version }}
+      SOURCE_REPO: ${{ matrix.source_repo }}
+      BASE_SHA: ${{ matrix.source_sha }}
+      FIX_NAME: ${{ matrix.fix }}
+      PLATFORM: windows-x86_64
+    steps:
+      - name: Checkout pinned Eglantine daily
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.source_repo }}
+          ref: ${{ matrix.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact source revision and record fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          {
+            echo "Variant: $TEST_VERSION"
+            echo "Fix under investigation: $FIX_NAME"
+            echo "Source repository: $SOURCE_REPO"
+            echo "Exact source revision: $(git rev-parse HEAD)"
+            echo "Source commit message: $(git log -1 --format=%s)"
+            echo "No source patch or fence timing override"
+            echo "NO GAME FILES, KEYS OR FIRMWARE INCLUDED"
+            echo "Not tested on Intel Arc B570 or with Ocarina gameplay"
+          } > B570-EXPERIMENT-MANIFEST.txt
+      - name: Setup build metadata and caches
+        uses: ./.github/actions/setup-build
+        with:
+          platform: windows-x86_64
+          sha: ${{ matrix.source_sha }}
+          refspec: b570-${{ matrix.version }}-original-daily
+          tag: b570-${{ matrix.version }}-isolated
+          release: 'false'
+      - name: Enable MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+      - name: Configure Windows build
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DUSE_DISCORD_PRESENCE=OFF
+          -DNIGHTLY_BUILD=ON
+      - name: Compile
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+      - name: Verify AV1 dependency configuration
+        shell: pwsh
+        run: |
+          $ffmpeg = Get-Content 'externals/ffmpeg/CMakeLists.txt' -Raw
+          if ($ffmpeg -notmatch 'AddJsonPackage\(ffmpeg-ci-av1\)') { throw 'AV1 FFmpeg dependency not configured' }
+      - name: Package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/release/bin/eglantine.exe)) { throw 'Executable missing' }
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          Copy-Item B570-EXPERIMENT-MANIFEST.txt build/release/bin/
+          if (Test-Path build/release/bin/eglantine.pdb) { Write-Host 'PDB included' }
+      - name: Automated package stress and integrity checks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'build/release/bin/eglantine.exe'
+          if (-not (Test-Path $exe)) { throw 'Missing emulator binary' }
+          $bytes = (Get-Item $exe).Length
+          if ($bytes -lt 1000000) { throw "Binary unexpectedly small: $bytes" }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          "SHA256: $hash" | Add-Content B570-EXPERIMENT-MANIFEST.txt
+          "Binary bytes: $bytes" | Add-Content B570-EXPERIMENT-MANIFEST.txt
+          $required = @('B570-EXPERIMENT-MANIFEST.txt')
+          foreach ($f in $required) { if (-not (Test-Path "build/release/bin/$f")) { throw "Missing $f" } }
+          1..3 | ForEach-Object {
+            $round = $_
+            $dest = "build/packaging-stress-$round"
+            New-Item -ItemType Directory -Force $dest | Out-Null
+            Copy-Item $exe $dest
+            $copied = (Get-FileHash "$dest/eglantine.exe" -Algorithm SHA256).Hash
+            if ($copied -ne $hash) { throw "Packaging stress round $round failed" }
+            Remove-Item $dest -Recurse -Force
+            Write-Host "Package integrity round $round PASS"
+          }
+          'Package integrity 3/3 PASS. No gameplay or GPU stress test was run.' | Add-Content B570-EXPERIMENT-MANIFEST.txt
+          Copy-Item B570-EXPERIMENT-MANIFEST.txt build/release/bin/ -Force
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-${{ matrix.fix }}-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload manifest even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-source-report
+          path: B570-EXPERIMENT-MANIFEST.txt
+          if-no-files-found: ignore
