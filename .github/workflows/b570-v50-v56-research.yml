@@ -200,7 +200,7 @@ jobs:
           $cmd = Get-Command nasm -ErrorAction Stop
           Write-Host "NASM resolved to $($cmd.Source)"
           nasm -v
-      - name: Configure Windows build (fallback from unavailable CI OpenSSL asset)
+      - name: Configure Windows build (source SDL3 and OpenSSL fallback)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -213,14 +213,14 @@ jobs:
             '-DYUZU_ROOM=OFF',
             '-DYUZU_ROOM_STANDALONE=OFF',
             '-DYUZU_USE_BUNDLED_QT=OFF',
-            '-DYUZU_USE_BUNDLED_SDL3=ON',
+            '-DYUZU_USE_BUNDLED_SDL3=OFF',
             '-DENABLE_UPDATE_CHECKER=OFF',
             '-DUSE_DISCORD_PRESENCE=OFF',
             '-DNIGHTLY_BUILD=ON',
             '-DYUZU_USE_BUNDLED_OPENSSL=OFF'
           )
           for ($attempt = 1; $attempt -le 3; $attempt++) {
-            Write-Host "CMake configure attempt $attempt/3 (source OpenSSL fallback; no crueter-ci prebuilt asset)"
+            Write-Host "CMake configure attempt $attempt/3 (source SDL3 and OpenSSL; avoid missing prebuilt CI assets)"
             & cmake @args
             if ($LASTEXITCODE -eq 0) { Write-Host 'CMake configure succeeded'; exit 0 }
             if ($attempt -eq 3) { throw 'CMake configuration failed after 3 attempts; inspect the first dependency error above' }
