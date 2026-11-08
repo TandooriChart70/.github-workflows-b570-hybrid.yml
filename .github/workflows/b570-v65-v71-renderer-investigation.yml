@@ -1,0 +1,213 @@
+name: B570 V65-V71 renderer investigation builds
+on:
+  push:
+    paths:
+      - '.github/workflows/b570-v65-v71-renderer-investigation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-variants:
+    name: Investigate ${{ matrix.version }} - ${{ matrix.probe }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {version: V65, probe: 'barriers-layouts'}
+          - {version: V66, probe: 'shader-pipeline'}
+          - {version: V67, probe: 'textures-framebuffers'}
+          - {version: V68, probe: 'memory-descriptors'}
+          - {version: V69, probe: 'submission-fences'}
+          - {version: V70, probe: 'conservative-vulkan'}
+          - {version: V71, probe: 'd3d12-feasibility'}
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      TEST_VERSION: ${{ matrix.version }}
+      SOURCE_REPO: Djihads80/Eglantine
+      BASE_SHA: 216d3e294367abd4742d7ebd736ef25a8db6f365
+      FIX_NAME: ${{ matrix.probe }}
+      PLATFORM: windows-x86_64
+    steps:
+      - name: Checkout pinned Eglantine daily
+        uses: actions/checkout@v4
+        with:
+          repository: Djihads80/Eglantine
+          ref: 216d3e294367abd4742d7ebd736ef25a8db6f365
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact source revision and record fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          {
+            echo "Variant: $TEST_VERSION"
+            echo "Fix under investigation: $FIX_NAME"
+            echo "Source repository: $SOURCE_REPO"
+            echo "Exact source revision: $(git rev-parse HEAD)"
+            echo "Source commit message: $(git log -1 --format=%s)"
+            echo "Diagnostic-only baseline: NO RENDERER PATCH APPLIED"
+            echo "NO GAME FILES, KEYS OR FIRMWARE INCLUDED"
+            echo "Not tested on Intel Arc B570 or with Ocarina gameplay"
+          } > B570-EXPERIMENT-MANIFEST.txt
+      - name: Generate isolated renderer source diagnostic
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'src/video_core/renderer_vulkan'
+          $terms = switch ($env:FIX_NAME) {
+            'barriers-layouts' { @('barrier','layout','transition') }
+            'shader-pipeline' { @('shader','pipeline','compile') }
+            'textures-framebuffers' { @('texture','framebuffer','renderpass') }
+            'memory-descriptors' { @('memory','descriptor','allocation') }
+            'submission-fences' { @('submit','fence','semaphore') }
+            'conservative-vulkan' { @('validation','device','feature') }
+            'd3d12-feasibility' { @('d3d12','direct3d','dxgi') }
+            default { throw "Unknown diagnostic $env:FIX_NAME" }
+          }
+          $paths = Get-ChildItem src -Recurse -File -Include *.cpp,*.h -ErrorAction Stop
+          $matches = @()
+          foreach ($term in $terms) {
+            $hits = @($paths | Select-String -Pattern $term -SimpleMatch | Select-Object -First 15)
+            $matches += "TERM $term : $($hits.Count) sampled matches"
+            $matches += @($hits | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" })
+          }
+          $report = @(
+            "Variant: $env:TEST_VERSION"
+            "Investigation: $env:FIX_NAME"
+            "Pinned source: $env:SOURCE_REPO $env:BASE_SHA"
+            'SOURCE-ONLY DIAGNOSTIC. NO GAMEPLAY OR INTEL GPU TEST.'
+            'NO RENDERER FIX IMPLEMENTED IN THIS VARIANT.'
+            'V71 IS NOT A D3D12 BACKEND.'
+          ) + $matches
+          $report | Set-Content B570-RENDERER-DIAGNOSTIC.txt
+          $report | Add-Content B570-EXPERIMENT-MANIFEST.txt
+      - name: Upload renderer diagnostic even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-renderer-diagnostic
+          path: B570-RENDERER-DIAGNOSTIC.txt
+          if-no-files-found: ignore
+      - name: Setup build metadata and caches
+        uses: ./.github/actions/setup-build
+        with:
+          platform: windows-x86_64
+          sha: 216d3e294367abd4742d7ebd736ef25a8db6f365
+          refspec: b570-${{ matrix.version }}-original-daily
+          tag: b570-${{ matrix.version }}-isolated
+          release: 'false'
+      - name: Enable MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+      - name: Install and verify NASM assembler for OpenSSL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nasm --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
+          $nasmDir = 'C:\Program Files\NASM'
+          if (-not (Test-Path "$nasmDir\nasm.exe")) { throw 'NASM executable missing after installation' }
+          $nasmDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$nasmDir\nasm.exe" -v
+      - name: Verify NASM assembler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmd = Get-Command nasm -ErrorAction Stop
+          Write-Host "NASM resolved to $($cmd.Source)"
+          nasm -v
+      - name: Configure Windows build (fallback from unavailable CI OpenSSL asset)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $args = @(
+            '-S', '.', '-B', 'build/release', '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            '-DBUILD_TESTING=OFF',
+            '-DYUZU_TESTS=OFF',
+            '-DYUZU_CMD=ON',
+            '-DYUZU_ROOM=OFF',
+            '-DYUZU_ROOM_STANDALONE=OFF',
+            '-DYUZU_USE_BUNDLED_QT=OFF',
+            '-DYUZU_USE_BUNDLED_SDL3=ON',
+            '-DENABLE_UPDATE_CHECKER=OFF',
+            '-DUSE_DISCORD_PRESENCE=OFF',
+            '-DNIGHTLY_BUILD=ON',
+            '-DYUZU_USE_BUNDLED_OPENSSL=OFF'
+          )
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "CMake configure attempt $attempt/3 (source OpenSSL fallback; no crueter-ci prebuilt asset)"
+            & cmake @args
+            if ($LASTEXITCODE -eq 0) { Write-Host 'CMake configure succeeded'; exit 0 }
+            if ($attempt -eq 3) { throw 'CMake configuration failed after 3 attempts; inspect the first dependency error above' }
+            Start-Sleep -Seconds (15 * $attempt)
+          }
+      - name: Compile
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+      - name: Verify AV1 dependency configuration
+        shell: pwsh
+        run: |
+          $ffmpeg = Get-Content 'externals/ffmpeg/CMakeLists.txt' -Raw
+          if ($ffmpeg -notmatch 'AddJsonPackage\(ffmpeg-ci-av1\)') { throw 'AV1 FFmpeg dependency not configured' }
+      - name: Package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/release/bin/eglantine.exe)) { throw 'Executable missing' }
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          Copy-Item B570-EXPERIMENT-MANIFEST.txt build/release/bin/
+          if (Test-Path build/release/bin/eglantine.pdb) { Write-Host 'PDB included' }
+      - name: Automated package stress and integrity checks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'build/release/bin/eglantine.exe'
+          if (-not (Test-Path $exe)) { throw 'Missing emulator binary' }
+          $bytes = (Get-Item $exe).Length
+          if ($bytes -lt 1000000) { throw "Binary unexpectedly small: $bytes" }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          "SHA256: $hash" | Add-Content B570-EXPERIMENT-MANIFEST.txt
+          "Binary bytes: $bytes" | Add-Content B570-EXPERIMENT-MANIFEST.txt
+          $required = @('B570-EXPERIMENT-MANIFEST.txt')
+          foreach ($f in $required) { if (-not (Test-Path "build/release/bin/$f")) { throw "Missing $f" } }
+          1..3 | ForEach-Object {
+            $round = $_
+            $dest = "build/packaging-stress-$round"
+            New-Item -ItemType Directory -Force $dest | Out-Null
+            Copy-Item $exe $dest
+            $copied = (Get-FileHash "$dest/eglantine.exe" -Algorithm SHA256).Hash
+            if ($copied -ne $hash) { throw "Packaging stress round $round failed" }
+            Remove-Item $dest -Recurse -Force
+            Write-Host "Package integrity round $round PASS"
+          }
+          'Package integrity 3/3 PASS. No gameplay or GPU stress test was run.' | Add-Content B570-EXPERIMENT-MANIFEST.txt
+          Copy-Item B570-EXPERIMENT-MANIFEST.txt build/release/bin/ -Force
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-diagnostic-baseline-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload manifest even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-source-report
+          path: B570-EXPERIMENT-MANIFEST.txt
+          if-no-files-found: ignore
