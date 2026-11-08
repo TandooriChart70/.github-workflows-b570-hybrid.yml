@@ -178,7 +178,7 @@ jobs:
       - name: Install Vulkan SDK
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
-      - name: Configure Windows build (retry transient dependency failures)
+      - name: Configure Windows build (fallback from unavailable CI OpenSSL asset)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -194,13 +194,14 @@ jobs:
             '-DYUZU_USE_BUNDLED_SDL3=ON',
             '-DENABLE_UPDATE_CHECKER=OFF',
             '-DUSE_DISCORD_PRESENCE=OFF',
-            '-DNIGHTLY_BUILD=ON'
+            '-DNIGHTLY_BUILD=ON',
+            '-DYUZU_USE_BUNDLED_OPENSSL=OFF'
           )
-          for ($attempt = 1; $attempt -le 4; $attempt++) {
-            Write-Host "CMake configure attempt $attempt/4"
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "CMake configure attempt $attempt/3 (source OpenSSL fallback; no crueter-ci prebuilt asset)"
             & cmake @args
             if ($LASTEXITCODE -eq 0) { Write-Host 'CMake configure succeeded'; exit 0 }
-            if ($attempt -eq 4) { throw 'CMake configuration failed after 4 attempts; inspect dependency download errors above' }
+            if ($attempt -eq 3) { throw 'CMake configuration failed after 3 attempts; inspect the first dependency error above' }
             Start-Sleep -Seconds (15 * $attempt)
           }
       - name: Compile
