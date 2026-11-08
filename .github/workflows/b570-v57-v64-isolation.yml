@@ -106,6 +106,7 @@ jobs:
             '-DYUZU_ROOM_STANDALONE=OFF',
             '-DYUZU_USE_BUNDLED_QT=OFF',
             '-DYUZU_USE_BUNDLED_SDL3=OFF',
+            '-DYUZU_USE_BUNDLED_SIRIT=OFF',
             '-DENABLE_UPDATE_CHECKER=OFF',
             '-DUSE_DISCORD_PRESENCE=OFF',
             '-DNIGHTLY_BUILD=ON',
