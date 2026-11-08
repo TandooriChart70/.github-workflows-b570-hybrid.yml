@@ -75,6 +75,23 @@ jobs:
       - name: Install Vulkan SDK
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
+      - name: Install and verify NASM assembler for OpenSSL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nasm --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
+          $nasmDir = 'C:\Program Files\NASM'
+          if (-not (Test-Path "$nasmDir\nasm.exe")) { throw 'NASM executable missing after installation' }
+          $nasmDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$nasmDir\nasm.exe" -v
+      - name: Verify NASM assembler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmd = Get-Command nasm -ErrorAction Stop
+          Write-Host "NASM resolved to $($cmd.Source)"
+          nasm -v
       - name: Configure Windows build (fallback from unavailable CI OpenSSL asset)
         shell: pwsh
         run: |
