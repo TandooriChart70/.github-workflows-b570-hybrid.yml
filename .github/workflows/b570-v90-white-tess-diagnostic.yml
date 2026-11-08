@@ -1,0 +1,266 @@
+name: B570 V90 V85-based white-geometry tessellation isolation
+on:
+  push:
+    paths:
+      - '.github/workflows/b570-v90-white-tess-diagnostic.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-variants:
+    name: Build ${{ matrix.version }} (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {version: V90, source_repo: 'Djihads80/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', change: 'eds1-pipeline', fence_us: 100, family: 'V85-isolation', label: 'V85-tessellation-AB'}
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      TEST_VERSION: ${{ matrix.version }}
+      FENCE_US: ${{ matrix.fence_us }}
+      CHANGE: ${{ matrix.change }}
+      SOURCE_REPO: ${{ matrix.source_repo }}
+      BASE_SHA: ${{ matrix.source_sha }}
+      FAMILY: ${{ matrix.family }}
+      PLATFORM: windows-x86_64
+    steps:
+      - name: Checkout pinned Eglantine daily
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.source_repo }}
+          ref: ${{ matrix.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Apply one isolated stability change to OOT preset
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path("src/common/game_presets.h")
+          src = path.read_text(encoding="utf-8")
+          start_marker = "inline void SetOcarinaOfTimeRecommendedSettings("
+          end_marker = "inline bool ApplyOcarinaOfTimePreset("
+          if src.count(start_marker) != 1 or src.count(end_marker) != 1:
+              raise RuntimeError("OOT preset delimiters missing or ambiguous")
+          a, b = src.index(start_marker), src.index(end_marker)
+          scope = src[a:b]
+          experiment = os.environ["CHANGE"]
+          replacements = {
+              "high-accuracy": (
+                  "    session(settings.gpu_accuracy, GpuAccuracy::Low);",
+                  "    session(settings.gpu_accuracy, GpuAccuracy::High);"),
+              "sync-shaders": (
+                  "    session(settings.use_asynchronous_shaders, true);",
+                  "    session(settings.use_asynchronous_shaders, false);"),
+              "sync-memory": (
+                  "    session(settings.use_reactive_flushing, true);",
+                  "    session(settings.use_reactive_flushing, true);\n"
+                  "    session(settings.sync_memory_operations, true);"),
+              "eds1-pipeline": (
+                  "    session(settings.anti_aliasing, AntiAliasing::Fxaa);",
+                  "    session(settings.anti_aliasing, AntiAliasing::Fxaa);\n"
+                  "    session(settings.dyna_state, ExtendedDynamicState::EDS1);")
+          }
+          if experiment not in replacements:
+              raise RuntimeError("Unknown stability experiment")
+          before, after = replacements[experiment]
+          if scope.count(before) != 1 or before == after:
+              raise RuntimeError(f"{experiment}: expected OOT-only preset anchor not found once")
+          updated = src[:a] + scope.replace(before, after, 1) + src[b:]
+          if updated == src:
+              raise RuntimeError("Patch did not change the source")
+          path.write_text(updated, encoding="utf-8", newline="\n")
+          print(f"Validated OOT-only experiment: {experiment}")
+          PY
+          git diff --check
+          test "$(git diff --name-only)" = "src/common/game_presets.h"
+          git diff --stat
+      - name: Keep V55 scheduler fence at 100us (V54 remains 500us)
+        if: matrix.fence_us == 100
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("src/video_core/renderer_vulkan/vk_scheduler.cpp")
+          src = p.read_text(encoding="utf-8")
+          old = 'return value == nullptr ? s64{500} : static_cast<s64>(std::atoll(value));'
+          new = 'return value == nullptr ? s64{100} : static_cast<s64>(std::atoll(value));'
+          if src.count(old) != 1:
+              raise RuntimeError("V55 fence source changed; refusing unverified patch")
+          p.write_text(src.replace(old, new, 1), encoding="utf-8", newline="\n")
+          PY
+          git diff --check
+          git diff --stat
+      - name: Add B570 temporary tessellation A-B switch (visual diagnosis only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def patch(path, original, updated):
+              p = Path(path)
+              content = p.read_text(encoding='utf-8')
+              if content.count(original) != 1:
+                  raise RuntimeError(f'{path}: expected single anchor for tess diagnostic')
+              p.write_text(content.replace(original, updated, 1), encoding='utf-8', newline='\\n')
+
+          header = 'src/video_core/renderer_vulkan/vk_graphics_pipeline.h'
+          patch(header,
+                '    bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }',
+                '    bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }\\n'
+                '    bool HasTessellationStages() const noexcept { return has_tess_stages; }')
+          patch(header,
+                '    const GraphicsPipelineCacheKey key;',
+                '    bool has_tess_stages{};\\n    const GraphicsPipelineCacheKey key;')
+
+          pipeline = 'src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp'
+          patch(pipeline,
+                '    fragment_has_color0_output = stage_infos[NUM_STAGES - 1].stores_frag_color[0];',
+                '    fragment_has_color0_output = stage_infos[NUM_STAGES - 1].stores_frag_color[0];\\n'
+                '    has_tess_stages = !IsMeshPipeline() && (spv_modules[1] || spv_modules[2]);')
+
+          rasterizer = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
+          patch(rasterizer,
+                '    mesh_draw = pipeline->IsMeshPipeline();',
+                '''    mesh_draw = pipeline->IsMeshPipeline();
+    // Diagnostic-only A/B: create/remove EDEN_NX2_NO_TESS_FILE while the game runs.
+    // This deliberately removes geometry to identify its rendering stage; never use as a gameplay fix.
+    static const char* const b570_tess_file{std::getenv("EDEN_NX2_NO_TESS_FILE")};
+    static bool b570_skip_tess{};
+    static u32 b570_tess_checks{};
+    if (b570_tess_file && (b570_tess_checks++ % 1024U) == 0U) {
+        const bool next = std::filesystem::exists(b570_tess_file);
+        if (next != b570_skip_tess) {
+            b570_skip_tess = next;
+            LOG_INFO(HW_GPU, "B570 tessellation diagnostic switch: {}", next ? "HIDE" : "RESTORE");
+        }
+    }
+    if (b570_skip_tess && pipeline->HasTessellationStages()) {
+        static u32 b570_tess_skips{};
+        if ((++b570_tess_skips % 1000U) == 1U) {
+            LOG_INFO(HW_GPU, "B570 tessellation diagnostic: skipped {} draws", b570_tess_skips);
+        }
+        return;
+    }''')
+          PY
+          git diff --check
+          git diff --stat
+      - name: Write source provenance manifest
+        shell: bash
+        run: |
+          {
+            echo "Variant: $TEST_VERSION"
+            echo "Family: $FAMILY"
+            echo "Source repository: $SOURCE_REPO"
+            echo "Source commit: $(git rev-parse HEAD)"
+            echo "Fence default requested: $FENCE_US us"
+            echo "OOT stability change: $CHANGE"
+            echo 'V54 basis uses 500us fence, V55 basis uses proven 100us default'
+            echo 'V85 EDS1 OOT preset, 100us fence, plus diagnostic-only tessellation draw filter'
+            echo 'User data, games, keys and firmware not included'
+            echo 'TEST ONLY: tessellation geometry deliberately hidden when EDEN_NX2_NO_TESS_FILE exists; not a permanent fix'
+            git diff --stat
+          } > B570-EXPERIMENT-MANIFEST.txt
+      - name: Setup build metadata and caches
+        uses: ./.github/actions/setup-build
+        with:
+          platform: windows-x86_64
+          sha: ${{ matrix.source_sha }}
+          refspec: b570-${{ matrix.version }}-original-daily
+          tag: b570-${{ matrix.version }}-isolated
+          release: 'false'
+      - name: Enable MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+      - name: Install and verify NASM assembler for OpenSSL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nasm --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
+          $nasmDir = 'C:\Program Files\NASM'
+          if (-not (Test-Path "$nasmDir\nasm.exe")) { throw 'NASM executable missing after installation' }
+          $nasmDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$nasmDir\nasm.exe" -v
+      - name: Verify NASM assembler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmd = Get-Command nasm -ErrorAction Stop
+          Write-Host "NASM resolved to $($cmd.Source)"
+          nasm -v
+      - name: Configure Windows build (source SDL3 and OpenSSL fallback)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $args = @(
+            '-S', '.', '-B', 'build/release', '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            '-DBUILD_TESTING=OFF',
+            '-DYUZU_TESTS=OFF',
+            '-DYUZU_CMD=ON',
+            '-DYUZU_ROOM=OFF',
+            '-DYUZU_ROOM_STANDALONE=OFF',
+            '-DYUZU_USE_BUNDLED_QT=OFF',
+            '-DYUZU_USE_BUNDLED_SDL3=OFF',
+            '-DYUZU_USE_BUNDLED_SIRIT=OFF',
+            '-DENABLE_UPDATE_CHECKER=OFF',
+            '-DUSE_DISCORD_PRESENCE=OFF',
+            '-DNIGHTLY_BUILD=ON',
+            '-DYUZU_USE_BUNDLED_OPENSSL=OFF'
+          )
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "CMake configure attempt $attempt/3 (source SDL3 and OpenSSL; avoid missing prebuilt CI assets)"
+            & cmake @args
+            if ($LASTEXITCODE -eq 0) { Write-Host 'CMake configure succeeded'; exit 0 }
+            if ($attempt -eq 3) { throw 'CMake configuration failed after 3 attempts; inspect the first dependency error above' }
+            Start-Sleep -Seconds (15 * $attempt)
+          }
+      - name: Compile
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+      - name: Verify AV1 dependency configuration
+        shell: pwsh
+        run: |
+          $ffmpeg = Get-Content 'externals/ffmpeg/CMakeLists.txt' -Raw
+          if ($ffmpeg -notmatch 'AddJsonPackage\(ffmpeg-ci-av1\)') { throw 'AV1 FFmpeg dependency not configured' }
+      - name: Package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/release/bin/eglantine.exe)) { throw 'Executable missing' }
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          Copy-Item B570-EXPERIMENT-MANIFEST.txt build/release/bin/
+          if (Test-Path build/release/bin/eglantine.pdb) { Write-Host 'PDB included' }
+      - name: Upload Windows diagnostic build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-${{ matrix.label }}-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload manifest even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-source-report
+          path: B570-EXPERIMENT-MANIFEST.txt
+          if-no-files-found: ignore
