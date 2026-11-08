@@ -75,21 +75,32 @@ jobs:
       - name: Install Vulkan SDK
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
-      - name: Configure Windows build
-        shell: bash
-        run: >-
-          cmake -S . -B build/release -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=OFF
-          -DYUZU_TESTS=OFF
-          -DYUZU_CMD=ON
-          -DYUZU_ROOM=OFF
-          -DYUZU_ROOM_STANDALONE=OFF
-          -DYUZU_USE_BUNDLED_QT=OFF
-          -DYUZU_USE_BUNDLED_SDL3=ON
-          -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
-          -DNIGHTLY_BUILD=ON
+      - name: Configure Windows build (fallback from unavailable CI OpenSSL asset)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $args = @(
+            '-S', '.', '-B', 'build/release', '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            '-DBUILD_TESTING=OFF',
+            '-DYUZU_TESTS=OFF',
+            '-DYUZU_CMD=ON',
+            '-DYUZU_ROOM=OFF',
+            '-DYUZU_ROOM_STANDALONE=OFF',
+            '-DYUZU_USE_BUNDLED_QT=OFF',
+            '-DYUZU_USE_BUNDLED_SDL3=ON',
+            '-DENABLE_UPDATE_CHECKER=OFF',
+            '-DUSE_DISCORD_PRESENCE=OFF',
+            '-DNIGHTLY_BUILD=ON',
+            '-DYUZU_USE_BUNDLED_OPENSSL=OFF'
+          )
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "CMake configure attempt $attempt/3 (source OpenSSL fallback; no crueter-ci prebuilt asset)"
+            & cmake @args
+            if ($LASTEXITCODE -eq 0) { Write-Host 'CMake configure succeeded'; exit 0 }
+            if ($attempt -eq 3) { throw 'CMake configuration failed after 3 attempts; inspect the first dependency error above' }
+            Start-Sleep -Seconds (15 * $attempt)
+          }
       - name: Compile
         shell: bash
         run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
