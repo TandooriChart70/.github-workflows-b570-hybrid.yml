@@ -129,26 +129,28 @@ jobs:
           rasterizer = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
           patch(rasterizer,
                 '    mesh_draw = pipeline->IsMeshPipeline();',
-                '''    mesh_draw = pipeline->IsMeshPipeline();
-    // Diagnostic-only A/B: create/remove EDEN_NX2_NO_TESS_FILE while the game runs.
-    // This deliberately removes geometry to identify its rendering stage; never use as a gameplay fix.
-    static const char* const b570_tess_file{std::getenv("EDEN_NX2_NO_TESS_FILE")};
-    static bool b570_skip_tess{};
-    static u32 b570_tess_checks{};
-    if (b570_tess_file && (b570_tess_checks++ % 1024U) == 0U) {
-        const bool next = std::filesystem::exists(b570_tess_file);
-        if (next != b570_skip_tess) {
-            b570_skip_tess = next;
-            LOG_INFO(HW_GPU, "B570 tessellation diagnostic switch: {}", next ? "HIDE" : "RESTORE");
-        }
-    }
-    if (b570_skip_tess && pipeline->HasTessellationStages()) {
-        static u32 b570_tess_skips{};
-        if ((++b570_tess_skips % 1000U) == 1U) {
-            LOG_INFO(HW_GPU, "B570 tessellation diagnostic: skipped {} draws", b570_tess_skips);
-        }
-        return;
-    }''')
+                '\n'.join([
+                    "    mesh_draw = pipeline->IsMeshPipeline();",
+                    "    // Diagnostic-only A/B: create/remove EDEN_NX2_NO_TESS_FILE while game runs.",
+                    "    // Suppressing geometry is diagnostic, never a permanent gameplay fix.",
+                    "    static const char* const b570_tess_file{std::getenv(\"EDEN_NX2_NO_TESS_FILE\")};",
+                    "    static bool b570_skip_tess{};",
+                    "    static u32 b570_tess_checks{};",
+                    "    if (b570_tess_file && (b570_tess_checks++ % 1024U) == 0U) {",
+                    "        const bool next = std::filesystem::exists(b570_tess_file);",
+                    "        if (next != b570_skip_tess) {",
+                    "            b570_skip_tess = next;",
+                    "            LOG_INFO(HW_GPU, \"B570 tessellation diagnostic switch: {}\", next ? \"HIDE\" : \"RESTORE\");",
+                    "        }",
+                    "    }",
+                    "    if (b570_skip_tess && pipeline->HasTessellationStages()) {",
+                    "        static u32 b570_tess_skips{};",
+                    "        if ((++b570_tess_skips % 1000U) == 1U) {",
+                    "            LOG_INFO(HW_GPU, \"B570 tessellation diagnostic: skipped {} draws\", b570_tess_skips);",
+                    "        }",
+                    "        return;",
+                    "    }",
+                ]))
           PY
           git diff --check
           git diff --stat
