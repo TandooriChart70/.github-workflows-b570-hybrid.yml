@@ -18,9 +18,9 @@ jobs:
           - {version: V51, source_repo: 'Djihads80/Eglantine', source_sha: 'e736dfde9e45bc3640935e373927814883803d95', features: 'isetp,gather,reduction', fence_us: 200, family: 'legacy'}
           - {version: V52, source_repo: 'A-Man-With-A-Plan-dev/Eglantine', source_sha: 'b536a971a54524ef271be60baef830e368529797', features: 'none', fence_us: 500, family: 'upscale-pr'}
           - {version: V53, source_repo: 'A-Man-With-A-Plan-dev/Eglantine', source_sha: 'b536a971a54524ef271be60baef830e368529797', features: 'none', fence_us: 100, family: 'upscale-pr'}
-          - {version: V54, source_repo: 'Djihads80/Eglantine', source_sha: '216d3e2', features: 'none', fence_us: 500, family: 'new-daily'}
-          - {version: V55, source_repo: 'Djihads80/Eglantine', source_sha: '216d3e2', features: 'none', fence_us: 100, family: 'new-daily'}
-          - {version: V56, source_repo: 'Djihads80/Eglantine', source_sha: 'a23be213d5', features: 'none', fence_us: 500, family: 'experimental'}
+          - {version: V54, source_repo: 'Djihads80/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', features: 'none', fence_us: 500, family: 'new-daily'}
+          - {version: V55, source_repo: 'Djihads80/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', features: 'none', fence_us: 100, family: 'new-daily'}
+          - {version: V56, source_repo: 'Djihads80/Eglantine', source_sha: 'a23be213d5c6e2e5d3b3683ec7a73b6b1bdb72b2', features: 'none', fence_us: 500, family: 'experimental'}
     runs-on: windows-2022
     timeout-minutes: 180
     env:
