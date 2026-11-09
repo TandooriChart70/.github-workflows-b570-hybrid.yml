@@ -91,3 +91,13 @@ if ($latest) {
 ```
 
 Do **not** delete the main game pipeline cache or the pretranslated shader pack. If the same crash repeats, stop tuning random switches and use Vulkan validation / crash captures with the upstream developers.
+
+## Result: descriptor template fallback did not fix the crash (2026-11-08 20:51 ET)
+
+`DescriptorFallback` with `NX2NAVI_MOVIE_SKIP=1` still exited 71 at `igvk64.dll+0x79ddf3`, reading address `0x190`. The log **confirmed** `vk_pipeline: descriptor update templates off (NX2NAVI_DESC_TEMPLATE=0)`. This eliminates that switch alone as a fix. These three distinct tests—write-back merge off, driver pipeline optimizations off (activation not yet verified), and descriptor-update templates off—each reached the same Intel driver crash. No tested setting is a verified gameplay workaround.
+
+### Next step: Vulkan API validation and full logs
+
+The native renderer supports `NX2NAVI_VK_VALIDATION=1`, **if** the installed Vulkan loader can find `VK_LAYER_KHRONOS_validation`. The source logs an explicit warning and continues without validation otherwise. Unlike a random gameplay setting, this can reveal an invalid Vulkan API usage preceding the driver fault. Validation substantially slows the game; skip the movies when capturing the crash. Run the existing local launcher with `-Test Baseline` and set both `NX2NAVI_VK_VALIDATION=1` and `NX2NAVI_MOVIE_SKIP=1` only in the parent process. After the run inspect the saved complete `nx2navi.log` for `vk validation error`, `vk validation warning`, and `validation set but`. Don't claim validation ran if the layer was missing.
+
+A matching crash is independently reported in another native PC recompilation on Intel Arc B580 with driver 101.9150: https://github.com/valentderah/totk-pc-recomp/issues/774. This suggests a common path, but does **not** prove the issue is only inside Intel's driver; invalid API use can also crash drivers.
