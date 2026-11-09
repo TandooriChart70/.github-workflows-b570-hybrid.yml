@@ -264,3 +264,13 @@ Upstream `runtime/prof_win.c` uses a ~1ms sampling loop that suspends/resumes ea
 ### Next controlled A/B
 
 Launch with the known-working 12-GiB APP_POOL and movie skip under the Baseline script, **explicitly removing** `NX2NAVI_PROFILE`, `NX2NAVI_PROFILE_SLOW`, `NX2NAVI_PROFILE_CHAINS`, `NX2NAVI_PROFILE_RENDER`, `NX2NAVI_PROFILE_MAIN`, `NX2NAVI_TRACE`, `NX2NAVI_PERF_SLOW_MS` from the process environment. Keep current resolution/other settings, record *foreground gameplay FPS* in the same area after >1 min; preserve full log. If it goes back to 7–9 FPS rather than 2–3, instrumentation burden is substantial. If it stays low, repeat same settings **after exiting Overwolf completely** as an isolated interference A/B; don't uninstall software or alter GPU driver. Once this is ruled out, consider a render-thread-only profiler (PROFILE_RENDER=1) with minimal burden or fuller slow traces.
+
+## Test 13 no-profile results: jump-triggered degradation persists (Nov 8 ~22:00 ET)
+
+The user ran the 12-GiB APP_POOL Baseline configuration **without NX2NAVI_PROFILE / NX2NAVI_TRACE**. They report 9–12 FPS at first, then after jumping down to the lower area FPS fell **again to 2–3**, and stayed there. Thus full-thread profiling overhead is *not* the only cause; it may still have worsened Test 12 performance but the fundamental area-triggered stall is reproducible unprofiled.
+
+Avoid conflating the act of jumping with the visibility/load of the new region or new GPU effects. Both guest application pool exhaustion (0x10801), Intel Arc Vulkan driver synchronization, VRAM mirror refusal, and an injected Vulkan overlay may contribute; no causality is proven yet. Previous log with 12-GiB pool still had 587 recoverable memory-limit errors; 16 GiB caused reproducible SDK Break before gameplay.
+
+Request the full new **unprofiled** game log immediately after the 2–3 FPS collapse (copy `.../game/logs/nx2navi.log` to Desktop before quitting). Then isolate the Overwolf hook: profile previously included `ow-graphics-vulkan.dll` and `ow-graphics-hook64.dll` inside game. After closing NX2navi, quit Overwolf and its apps entirely via system tray and Task Manager, then re-run exact same 12-GiB Baseline (no trace). Do not change shader caches, resolution, driver, or other config in this A/B. Compare initial and **post-drop sustained** FPS at same location. Keep 12-GiB as rollback baseline.
+
+If overhead-free Overwolf-free test still stalls, run `NX2NAVI_TRACE=perf` **without** `NX2NAVI_PROFILE` for GPU/CPU-bound and VRAM diagnostics from `runtime/perf.c` and gather last `perf: frame`, `bound:`, `mem: mirror frame`, `MapPhysicalMemory` lines. Avoid a second all-thread sampling profile for benchmarking.
