@@ -1,0 +1,217 @@
+name: B570 V91-V93 ASTC texture and transcode cache experiments
+on:
+  push:
+    paths:
+      - '.github/workflows/b570-v91-v93-astc-vram-isolation.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-variants:
+    name: Build ${{ matrix.version }} (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {version: V91, source_repo: 'Eglantine-Community/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', change: 'astc-cpu-async', fence_us: 100, family: 'V85-ASTC', label: 'V85-ASTC-CPUasync'}
+          - {version: V92, source_repo: 'Eglantine-Community/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', change: 'cache-64', fence_us: 100, family: 'V85-VRAM', label: 'V85-transcode-cache64'}
+          - {version: V93, source_repo: 'Eglantine-Community/Eglantine', source_sha: '216d3e294367abd4742d7ebd736ef25a8db6f365', change: 'astc-cpu-async-cache-64', fence_us: 100, family: 'V85-combined', label: 'V85-ASTC-CPUasync-cache64'}
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      TEST_VERSION: ${{ matrix.version }}
+      FENCE_US: ${{ matrix.fence_us }}
+      CHANGE: ${{ matrix.change }}
+      SOURCE_REPO: ${{ matrix.source_repo }}
+      BASE_SHA: ${{ matrix.source_sha }}
+      FAMILY: ${{ matrix.family }}
+      PLATFORM: windows-x86_64
+    steps:
+      - name: Checkout pinned Eglantine daily
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.source_repo }}
+          ref: ${{ matrix.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Apply V85 EDS1 preset with isolated ASTC diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path("src/common/game_presets.h")
+          src = p.read_text(encoding="utf-8")
+          begin = "inline void SetOcarinaOfTimeRecommendedSettings("
+          end = "inline bool ApplyOcarinaOfTimePreset("
+          if src.count(begin) != 1 or src.count(end) != 1:
+              raise RuntimeError("OOT preset delimiters are ambiguous")
+          a, b = src.index(begin), src.index(end)
+          scope = src[a:b]
+          fxaa = "    session(settings.anti_aliasing, AntiAliasing::Fxaa);"
+          if scope.count(fxaa) != 1:
+              raise RuntimeError("V85 preset anchor missing")
+          scope = scope.replace(fxaa, fxaa + "\n    session(settings.dyna_state, ExtendedDynamicState::EDS1);", 1)
+          change = os.environ["CHANGE"]
+          if change in ("astc-cpu-async", "astc-cpu-async-cache-64"):
+              astc = "    session(settings.astc_recompression, AstcRecompression::Bc3);"
+              if scope.count(astc) != 1:
+                  raise RuntimeError("ASTC preset anchor missing")
+              scope = scope.replace(astc, astc + "\n    session(settings.accelerate_astc, AstcDecodeMode::CpuAsynchronous);", 1)
+          elif change != "cache-64":
+              raise RuntimeError(f"Unknown change: {change}")
+          p.write_text(src[:a] + scope + src[b:], encoding="utf-8", newline="\n")
+          print(f"Validated V85 OOT preset and isolated ASTC change: {change}")
+          PY
+          git diff --check
+          test "$(git diff --name-only)" = "src/common/game_presets.h"
+          git diff --stat
+      - name: Preserve V85 100us fence baseline
+        if: matrix.fence_us == 100
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("src/video_core/renderer_vulkan/vk_scheduler.cpp")
+          src = p.read_text(encoding="utf-8")
+          old = 'return value == nullptr ? s64{500} : static_cast<s64>(std::atoll(value));'
+          new = 'return value == nullptr ? s64{100} : static_cast<s64>(std::atoll(value));'
+          if src.count(old) != 1:
+              raise RuntimeError("V55 fence source changed; refusing unverified patch")
+          p.write_text(src.replace(old, new, 1), encoding="utf-8", newline="\n")
+          PY
+          git diff --check
+          git diff --stat
+      - name: Test 64MiB free-transcode scratch budget on selected variants
+        if: matrix.change == 'cache-64' || matrix.change == 'astc-cpu-async-cache-64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("src/video_core/renderer_vulkan/vk_texture_cache.cpp")
+          src = p.read_text(encoding="utf-8")
+          old = "static constexpr u64 MaxFreeTranscodeBytes = u64{256} << 20;"
+          new = "static constexpr u64 MaxFreeTranscodeBytes = u64{64} << 20;"
+          if src.count(old) != 1:
+              raise RuntimeError("Expected single Vulkan transcode cache budget anchor")
+          p.write_text(src.replace(old, new, 1), encoding="utf-8", newline="\n")
+          PY
+          git diff --check
+          git diff --stat
+      - name: Write source provenance manifest
+        shell: bash
+        run: |
+          {
+            echo "Variant: $TEST_VERSION"
+            echo "Family: $FAMILY"
+            echo "Source repository: $SOURCE_REPO"
+            echo "Source commit: $(git rev-parse HEAD)"
+            echo "Fence default requested: $FENCE_US us"
+            echo "OOT stability change: $CHANGE"
+            echo 'All variants use V85 EDS1 OOT preset with 100us scheduler fence'
+            echo 'V91: CPU asynchronous ASTC; V92: Vulkan transcode scratch cache 64MiB; V93: both'
+            echo 'User data, games, keys and firmware not included'
+            echo 'Experimental only: game rendering, performance and stability unverified on Intel Arc B570'
+            git diff --stat
+          } > B570-EXPERIMENT-MANIFEST.txt
+      - name: Setup build metadata and caches
+        uses: ./.github/actions/setup-build
+        with:
+          platform: windows-x86_64
+          sha: ${{ matrix.source_sha }}
+          refspec: b570-${{ matrix.version }}-original-daily
+          tag: b570-${{ matrix.version }}-isolated
+          release: 'false'
+      - name: Enable MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+      - name: Install and verify NASM assembler for OpenSSL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nasm --yes --no-progress --limit-output
+          if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
+          $nasmDir = 'C:\Program Files\NASM'
+          if (-not (Test-Path "$nasmDir\nasm.exe")) { throw 'NASM executable missing after installation' }
+          $nasmDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$nasmDir\nasm.exe" -v
+      - name: Verify NASM assembler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmd = Get-Command nasm -ErrorAction Stop
+          Write-Host "NASM resolved to $($cmd.Source)"
+          nasm -v
+      - name: Configure Windows build (source SDL3 and OpenSSL fallback)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $args = @(
+            '-S', '.', '-B', 'build/release', '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            '-DBUILD_TESTING=OFF',
+            '-DYUZU_TESTS=OFF',
+            '-DYUZU_CMD=ON',
+            '-DYUZU_ROOM=OFF',
+            '-DYUZU_ROOM_STANDALONE=OFF',
+            '-DYUZU_USE_BUNDLED_QT=OFF',
+            '-DYUZU_USE_BUNDLED_SDL3=OFF',
+            '-DYUZU_USE_BUNDLED_SIRIT=OFF',
+            '-DENABLE_UPDATE_CHECKER=OFF',
+            '-DUSE_DISCORD_PRESENCE=OFF',
+            '-DNIGHTLY_BUILD=ON',
+            '-DYUZU_USE_BUNDLED_OPENSSL=OFF'
+          )
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "CMake configure attempt $attempt/3 (source SDL3 and OpenSSL; avoid missing prebuilt CI assets)"
+            & cmake @args
+            if ($LASTEXITCODE -eq 0) { Write-Host 'CMake configure succeeded'; exit 0 }
+            if ($attempt -eq 3) { throw 'CMake configuration failed after 3 attempts; inspect the first dependency error above' }
+            Start-Sleep -Seconds (15 * $attempt)
+          }
+      - name: Compile
+        shell: bash
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel 4
+      - name: Verify AV1 dependency configuration
+        shell: pwsh
+        run: |
+          $ffmpeg = Get-Content 'externals/ffmpeg/CMakeLists.txt' -Raw
+          if ($ffmpeg -notmatch 'AddJsonPackage\(ffmpeg-ci-av1\)') { throw 'AV1 FFmpeg dependency not configured' }
+      - name: Package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/release/bin/eglantine.exe)) { throw 'Executable missing' }
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
+          Copy-Item B570-EXPERIMENT-MANIFEST.txt build/release/bin/
+          if (Test-Path build/release/bin/eglantine.pdb) { Write-Host 'PDB included' }
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-${{ matrix.label }}-Windows-x64
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload manifest even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B570-${{ matrix.version }}-source-report
+          path: B570-EXPERIMENT-MANIFEST.txt
+          if-no-files-found: ignore
