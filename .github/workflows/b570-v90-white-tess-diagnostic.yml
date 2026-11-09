@@ -115,16 +115,16 @@ jobs:
           patch(header,
                 '    bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }',
                 '    bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }\n'
-                '    bool HasTessellationStages() const noexcept { return has_tess_stages; }')
+                '    bool HasTessellationStages() const noexcept { return b570_has_tess_stages; }')
           patch(header,
                 '    const GraphicsPipelineCacheKey key;',
-                '    bool has_tess_stages{};\n    const GraphicsPipelineCacheKey key;')
+                '    bool b570_has_tess_stages{};\n    const GraphicsPipelineCacheKey key;')
 
           pipeline = 'src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp'
           patch(pipeline,
                 '    fragment_has_color0_output = stage_infos[NUM_STAGES - 1].stores_frag_color[0];',
                 '    fragment_has_color0_output = stage_infos[NUM_STAGES - 1].stores_frag_color[0];\n'
-                '    has_tess_stages = !IsMeshPipeline() && (spv_modules[1] || spv_modules[2]);')
+                '    b570_has_tess_stages = !IsMeshPipeline() && (spv_modules[1] || spv_modules[2]);')
 
           rasterizer = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
           patch(rasterizer,
