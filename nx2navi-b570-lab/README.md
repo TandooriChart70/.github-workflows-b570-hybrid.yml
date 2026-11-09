@@ -200,3 +200,34 @@ Hardware: Arc B570 has **10 GiB dedicated GDDR6 VRAM**, which is distinct from s
 Try `NX2NAVI_APP_POOL=0x400000000` (16 GiB) as a single change, continuing `NX2NAVI_MOVIE_SKIP=1` and `-Test Baseline`. Keep `NX2NAVI_GAME_RES` at previous default for a controlled memory comparison. Record latest steady-gameplay FPS and 0x10801 count. This value is a *guest budget*, not an immediate 16-GiB physical memory allocation, but may let the game's memory requests use more host RAM. If process memory rises rapidly / commit pressure begins, exit and revert. Upstream source `runtime/memory.c` returns `R_LIMIT_REACHED=0x10801` when `new alias + existing alias + heap + image bytes > L.pool`; it does not test discrete GPU VRAM. This is an experiment, not a proven fix.
 
 If Test 11 still degrades to single-digit FPS, **keep the safer pool value** and try a separate single change `NX2NAVI_GAME_RES=1080` (Ocarina-specific) to reduce rendering load and VRAM pressure. Independently measure GPU dedicated/shared usage in Task Manager. Preserve the compiled game, save files and shader and pipeline caches.
+
+## Test 11 failed: 16 GiB guest pool causes SDK Break (2026-11-08 ~21:40 ET)
+
+Two consecutive fresh launches with `NX2NAVI_APP_POOL=0x400000000` (16 GiB), movie skip on, and Baseline settings exited **70 before entering gameplay**:
+
+```
+FATAL: svc #0x26 unknown at sdk+0x1a5560: Break (the SDK aborted)
+FATAL: svc #0x26 unknown is not implemented
+[host] fatal: memory commit: this process ~1600 MB, system ~11.5 of 52 GB
+```
+
+There were **zero 0x10801 errors and no 60-second FPS records**, but these are **not successes**, because the game aborted during initialization. The user's available system RAM is not exhausted. Do not increase APP_POOL further: the 16 GiB value appears incompatible with game SDK/runtime expectations in this build. The exact SDK abort reason is not determined without the complete log and Break reason, and the code is not safe to patch over.
+
+Upstream `runtime/memory.c` reserves only a 12-GiB contiguous guest heap window (`HEAP_CAP`) while `APP_POOL` is a separate total budget; this does not by itself prove why SDK aborted.
+
+**Revert to known-good** `NX2NAVI_APP_POOL=0x300000000` (12 GiB). For next controlled performance experiment **keep 12 GiB fixed** and change only `NX2NAVI_GAME_RES=1080`. This is supported for Ocarina in upstream `runtime/widescreen.c`; verify log contains `widescreen: picture 1920x1080, scene ...` and not `generated C has no widescreen patch sets`. With 12 GiB otherwise unchanged, 1080p lowers internal picture pixels from 2560x1440 by ~44%, and can mitigate VRAM use and GPU frame cost. Does not address 0x10801 directly. Continue to keep compiled game, saves, shaders and pipeline cache intact.
+
+PowerShell launch:
+```powershell
+$script = "$env:USERPROFILE\Downloads\NX2navi-B570-Compatibility-Lab\NX2navi-B570-Test.ps1"
+$env:NX2NAVI_APP_POOL = '0x300000000'
+$env:NX2NAVI_GAME_RES = '1080'
+$env:NX2NAVI_MOVIE_SKIP = '1'
+try {
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -Test Baseline
+} finally {
+    'NX2NAVI_APP_POOL','NX2NAVI_GAME_RES','NX2NAVI_MOVIE_SKIP' | ForEach-Object { Remove-Item "Env:$_" -ErrorAction SilentlyContinue }
+}
+```
+
+After run, compare sustained FPS and count `0x10801` from the **same** session log. If aborted, restore pure 12 GiB with no `GAME_RES`. Avoid claiming that changing system RAM settings can increase the 10 GiB dedicated VRAM of the Intel B570.
