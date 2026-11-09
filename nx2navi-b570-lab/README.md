@@ -133,3 +133,20 @@ The 2233-line privately supplied log **explicitly states**: `NX2NAVI_VK_VALIDATI
 - Reported 60-second windows during active gameplay included 16.6, 11.6, 10.0 and 11.0 FPS; sustained 3.8 FPS windows followed repeated focus-loss events. The 3.8 FPS value **cannot be assumed to represent foreground game speed**: compare with F10 overlay while the game is focused.
 - The game explicitly logs `resolution: the game's own (this build has no output and scene patch sets; output_res and render_scale do nothing)`. Do not recommend those keys as a performance fix for this particular build.
 - Vulkan `REPLAY_ASYNC=1` is a possible *later* controlled performance experiment, not verified to help. More importantly, establish baseline focused FPS and test repeatability of startup success with `MOVIE_SKIP=1`, **without** unnecessary validation toggles (since the layer was absent). Preserve full log and caches.
+
+## New slowdown reproduced after jumping (2026-11-08 ~21:18–21:22 EST)
+
+While playing the native port using the Baseline Test 4 settings with movie skipping, Link appeared smooth initially, then the game sharply deteriorated after jumping. The user saved the full runtime log locally at `Desktop/NX2navi-JUMP-SLOWDOWN-20261108-212200.log`. The log has not yet been uploaded, but excerpts show successive one-minute windows:
+
+- 2027 frames in 60s (**33.8 FPS**), worst frame 2205.1 ms with pipeline build 2078.9 ms; other worst frames have shader translation ~599–794 ms.
+- 98 frames in 60s (**1.6 FPS**); frame 2072 shader translation 707.6 ms, but many slower frames already report no pipeline build or shader translation.
+- 64 frames in 60s (**1.1 FPS**); worst frames 1428–1984 ms, shader translation and pipeline build both 0 ms, replay 37–64 ms.
+- 43 and 40 frames in 60s (**0.7 FPS**); worst frames ~1591–1891 ms, shader and pipeline 0 ms, replay ~27–44 ms.
+
+The log contains window-focus changes from 21:18:41 onward, **after** the severe drop began. Therefore the initial sharp slowdown cannot be attributed only to background-window throttling. In the source, `runtime/perf.c` measures frame time as the time between presents; the listed shader/pipeline/replay entries are not an exhaustive partition of that interval. The unaccounted time could be guest game processing, scheduling, waits or another path. Avoid assuming the initial shader-compilation burst explains the later persistent ~0.7 FPS.
+
+### Next evidence / profiler
+
+Get the entire saved `NX2navi-JUMP-SLOWDOWN-20261108-212200.log` before another test. Search it for `perf: frame`, `bound:`, `kernel:`, `sched:`, memory activity and later frame-scheduling notices.
+
+If detailed logs do not explain the sustained stall, NX2navi already includes a Windows sampling profiler in `runtime/prof_win.c`: set `NX2NAVI_PROFILE=<absolute output path>`, `NX2NAVI_PROFILE_SLOW=1000` (capture stacks for frames slower than 1 second), `NX2NAVI_MOVIE_SKIP=1`, and `NX2NAVI_TRACE=perf` for one controlled repeat. The profiler adds overhead and may perturb timing. Limit the run and close normally so the main profile is written. The slow-frame dumps (`<profile>.f<frame>`) can reveal which threads are waiting. Do not touch shader caches or overwrite the previously successful log.
