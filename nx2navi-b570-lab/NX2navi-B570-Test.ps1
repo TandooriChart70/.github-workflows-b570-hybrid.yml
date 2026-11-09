@@ -20,7 +20,7 @@ $ini = Join-Path $GameDir 'nx2navi.ini'
 if (-not $exe) {
     throw "No built game executable (ocarina.exe or nx2navi.exe) found in $GameDir. Supply -GameDir with the path from the NX2navi launcher."
 }
-if (@(Get-Process -Name nx2navi -ErrorAction SilentlyContinue).Count -gt 0) {
+if (@(Get-Process -Name ocarina,nx2navi -ErrorAction SilentlyContinue).Count -gt 0) {
     throw 'Close the running NX2navi game before starting this diagnostic.'
 }
 
