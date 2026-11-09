@@ -299,3 +299,19 @@ Maintain **APP_POOL=0x300000000 (12 GiB)**, MOVIE_SKIP=1 and Baseline runner wit
 User says dedicated VRAM is maxed out. Their new 17-second 3840x2160 capture shows Task Manager on the **CPU** performance page, with side-panel Intel Arc B570 **GPU 0 at 99% utilization** and ~49°C temperature; CPU ~27% (~3.79 GHz); system RAM **25.7/47.8 GB (54%)**. Game onscreen FPS around 4–7 during clip. The clip **does not show Task Manager GPU detail page or its dedicated/shared GPU memory figures**, so do not infer 99% means 99% *memory* occupancy. However the preceding `NX2navi-AFTER-JUMP.log` independently reported Vulkan device-local use **8,794 MiB against budget 8,544 MiB** and a number of budget-refused VRAM buffer mirrors. Therefore both near-max GPU utilization and significant VRAM-budget pressure are documented; GPU utilization does not by itself distinguish compute shader/graphics load from memory thrashing or synchronization.
 
 Do not propose adding more system RAM as extra high-speed VRAM; Arc B570 has **10 GiB GDDR6 dedicated** and mirrors imported host buffers to VRAM to avoid PCIe bottlenecks. 16-GiB guest APP_POOL aborted at startup; 12-GiB remains workable. Existing experiment `NX2NAVI_TEX_VRAM_PRESSURE=75` is intended to evict released recoverable textures sooner; await its full log and sustained foreground post-jump FPS before modifying further variables. The video has NX2navi at 3200x1800 window while browser and Task Manager stay open. If pressure remains, next controlled experiment should adjust `NX2NAVI_WINDOW_SIZE=1920x1080` (upscaling target only; game internal 2560x1440 remains unchanged without widescreen patch sets), and/or isolate Overwolf Vulkan hooking. Ask user to click Task Manager > Performance > GPU 0 and report **Dedicated GPU memory** (used/total) and **Shared GPU memory** (used/total) for a reliable split; the CPU page only shows utilization.
+
+## Direct Task Manager VRAM measurement (Nov 8 ~22:17 ET)
+
+User supplied Task Manager > Performance > Intel Arc B570 screenshot during low-FPS gameplay:
+- GPU **3D engine 98% utilized**, temperature **53 C**;
+- **dedicated GPU 9.6/10.0 GB (96%)**;
+- **shared GPU 8.5/31.8 GB (~27%)**;
+- **total GPU memory 18.0/41.8 GB**;
+- system RAM used **25.9/47.8 GB (54%)**;
+- CPU **18%**; Arc driver **32.0.101.9175**.
+
+This definitively confirms VRAM saturation and substantial allocation in system shared memory, beyond previous Vulkan budget logs (8794 MiB usage / 8544 MiB budget). **Not all 8.5 GB of allocated shared memory necessarily represents frequent per-frame PCIe reads; Task Manager utilization is not a bandwidth meter.** CPU 18% total utilization also does not rule out a main-thread bottleneck.
+
+The screenshot likely was taken near the ongoing `NX2NAVI_TEX_VRAM_PRESSURE=75` test, but the user has **not yet confirmed** which run or supplied the corresponding run log and post-jump FPS. Do not claim the 75% experiment failed without verification. The next diagnostic is to gather the `NX2navi-VRAM75.log` and confirm `released textures under VRAM pressure: dropped above 75%` and sustained FPS. Also use Windows Task Manager > Details with GPU memory columns (or simply close other GPU-heavy apps) to check whether NX2navi alone accounts for most allocations. Use the GPU memory graph to monitor and compare.
+
+Potential next single-variable experiment if the 75% setting failed: reduce window output from **3200x1800 to 1920x1080** using `NX2NAVI_WINDOW_SIZE=1920x1080`; this affects **presentation and swapchain** memory, but due to missing Ocarina patch sets **internal game 2560x1440 stays unchanged**, so expected VRAM reduction may be modest. Could also test smaller released texture retention cap `NX2NAVI_TEX_RELEASED_MB`, with upstream's cautious re-upload caveats. Preserve baseline 12-GiB guest APP_POOL, don't switch from `memory=mirror` to import, don't increase 16-GiB guest pool (SDK startup abort).
