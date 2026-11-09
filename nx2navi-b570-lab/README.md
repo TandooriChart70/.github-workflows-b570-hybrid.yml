@@ -329,3 +329,34 @@ Source: `runtime/vk_texture.c` supports `NX2NAVI_TEX_RELEASED_MB` as a cap on th
 User reports that **fullscreen gameplay peaked at 15 FPS**, felt smoother, but exhibited **brief off-white flashing or incomplete 3D rendering that resolved once the environment loaded**. Dynamic desktop wallpaper already disabled, GPU previous measurement was near VRAM limit. Previous smaller window 1920x1080 runs reported 6–10 FPS. This is a **peak** measured by user, not a guaranteed sustained 15 FPS; the only supported claim is visible improvement in that run.
 
 The transient white flashing might be from unfinished shader/pipeline work (noteworthy `NX2NAVI_PIPE_PREBUILD=0`, `NX2NAVI_LIB_PREBUILD=0`, `NX2NAVI_GPL=0`), texture upload/redecode under VRAM pressure, or render-target alias / sync issues. **Don't change multiple render flags or purge caches**: the existing baseline is unusually stable for Intel Arc B570, and previous variants crashed. First test if the exact flashing location flashes again when revisited *without restarting game*; if only first visit, shader/pipeline warming becomes more plausible. Obtain full `nx2navi.log` from this session; inspect `vk_exec: ... waited for its pipeline`, `gfx_shader`, `vk: ...`, `frametime:`, `texture`, `vk: headroom`, `mem: mirror`, `released`, `gfx: window focus`, and presentation resolution. Determine whether full screen performance gain is sustained, and if fullscreen is native 3840x2160 presentation or another window size. This will guide whether to safely re-enable prebuild *one flag at a time* or isolate texture alignment. Need verify parameters before suggesting any prebuild modification. No direct claim of render fix yet.
+
+## Uploaded fullscreen log analysis and graphics-white-flash test (Nov 8 ~22:40 ET)
+
+The user uploaded `NX2navi-FULLSCREEN-15FPS.log` (790 lines) from the fullscreen run. Facts grounded in the complete log:
+
+- On start `gfx: window 1920x1080`, internal picture remains **2560x1440**, and after selecting fullscreen the log explicitly says `vk: FSR upscales 2560x1440 to 3840x2160 (sharpness 80)`, so 4K output scaling happens when fullscreen.
+- Opening 60 seconds: 1639 frames in 60.1 s = 27.3 FPS but includes startup/menu. Final 114 frames in 9.6 s = **11.9 FPS**, 1% low 9.3 FPS, consistent with user reporting peak **15 FPS** in gameplay. The process exited normally (`gfx: window closed; exiting`), **no FATAL**.
+- `NX2NAVI_PIPE_PREBUILD=0` gave **2023** records not prebuilt; `NX2NAVI_GPL=0`, `NX2NAVI_LIB_PREBUILD=0`; the host says `vk_exec: draws skipped while their pipeline builds: those and full-screen draws (NX2NAVI_PIPE_SKIP=fullscreen)`. The vertex draw census at frame 600 counts 23 draws skipped for pending pipelines; the next 600 counts 3; `first mesh draw skipped because: pipeline still building (program 6783)` appears in gameplay. Only four explicit one-shot waits were logged: 8.3ms, 2.1ms, 2.9ms, and 13.7ms.
+- Worst opening frame 1214 2211.5ms with 98.7ms texture upload (20ms ASTC), 196.5ms graphics replay, zero shader or pipeline build; frame 1204 719.4ms with 268.0ms texture upload and 595.5ms replay; another frame 1551 has 68.1ms shader translation and 125.8ms pipeline build. The start and end frame time statistics demonstrate multiple independent causes of uneven pacing.
+- `MapPhysicalMemory.*failed 0x10801` count **189**, in a contiguous burst around frames 1200-1600; guest app pool still 12-GiB test; this is `LimitReached` and known recoverable, not a GPU crash.
+- Near memory load: four tiny 4 KiB pools stay imported as their VRAM mirror is denied at 7581 MiB use / 8627 MiB budget (other reserved headroom/threshold applies), so VRAM pressure persists but mirrors alone not enough to explain flashing.
+- High ASTC GPU decode activity: 27,653 cumulative regions, ~2.68 billion decoded texels. It can cause visible first-use texture stutter but not necessarily persistent white flashes.
+- No focused proof the white flashes were from a skipped pipeline vs texture/alias upload; video/timestamp correlation absent.
+
+### Next isolated test: restrict pipeline skipping to per-frame passes
+
+NX2navi upstream source `runtime/vk_exec_draw.c` defines `NX2NAVI_PIPE_SKIP` modes: `strict` skips only draws in passes where *all* targets were rendered in previous frame; `any` allows some targets; default `fullscreen` also skips full-screen draws. The user sees transient off-white flashed/incomplete scene as a pass appears and then resolves. To test skipped-draw hypothesis **change only** `NX2NAVI_PIPE_SKIP=strict`, retaining working 12 GiB guest pool, movie skip, current window/fullscreen settings, and Baseline script (recorder/gpl/dynamic vertex/prebuild off). It will force more first-use draws to **wait for pipeline**, possibly trading white flashes for more stutters (or a Vulkan driver fault). Do not delete caches. Compare visual white flashes **at the same location, on first and second visit**, and sustained FPS. Abort/revert if stalls worsen. Environment override should be removed at end. If `strict` changes flashing, work on pipeline warmup/prebuild separately, but only after verifying that prebuild won't reproduce old Intel Arc crash. If it doesn't, investigate texture/alias/guest pool via source and minimal tracing, not random toggles.
+
+Sample settings:
+```powershell
+$script = "$env:USERPROFILE\Downloads\NX2navi-B570-Compatibility-Lab\NX2navi-B570-Test.ps1"
+$env:NX2NAVI_APP_POOL='0x300000000'
+$env:NX2NAVI_MOVIE_SKIP='1'
+$env:NX2NAVI_WINDOW_SIZE='1920x1080'
+$env:NX2NAVI_PIPE_SKIP='strict'
+try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -Test Baseline } finally {
+  'NX2NAVI_APP_POOL','NX2NAVI_MOVIE_SKIP','NX2NAVI_WINDOW_SIZE','NX2NAVI_PIPE_SKIP' |
+    ForEach-Object { Remove-Item "Env:$_" -ErrorAction SilentlyContinue }
+}
+```
+The previous environment may hold a fullscreen setting saved by the in-game menu in `nx2navi.ini`; do **not** change it for this A/B. Re-enter fullscreen using same method as before. Keep wallpaper disabled.
