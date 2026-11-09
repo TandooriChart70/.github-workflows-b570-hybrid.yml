@@ -360,3 +360,9 @@ try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -Test Base
 }
 ```
 The previous environment may hold a fullscreen setting saved by the in-game menu in `nx2navi.ini`; do **not** change it for this A/B. Re-enter fullscreen using same method as before. Keep wallpaper disabled.
+
+## Test 16 strict skip first 35-second video + user FPS correction (Nov 8 ~22:46 ET)
+
+User tested `NX2NAVI_PIPE_SKIP=strict` with the otherwise successful fullscreen 12-GiB baseline and recorded ~34.7s gameplay. All 12 evenly sampled frames show fully drawn scene, character, forest path, trees, light rays, HUD, and **no conspicuous large white flash**; on-screen overlay in those samples is generally 6–9 FPS. **Important user correction**: **this Test 16 ALSO peaked at 15 FPS**, same as previous fullscreen `PIPE_SKIP=fullscreen`. Do not call the strict run a lower-FPS test merely because 6–9 FPS appeared in some video frames; peak is unchanged, but sustained averages not yet established, so evidence is for apparent improved visual completeness, NOT a definite sustained-speed win or loss.
+
+Source `runtime/vk_exec_draw.c`: `strict` skips only draws in passes all of whose targets were previously rendered; `fullscreen` skips more draws, including fullscreen draws while their pipelines build. Visual improvement is consistent with skipped-draw artifact hypothesis, but not proven causal without explicit log/pipeline correlation and matched scene first-time traversal. User's launcher automatically saves `Desktop/NX2navi-STRICT-TEST.log` after Test 16. Next step: user should provide this log for count of skipped draws and long frames, verify `vk_exec: draws skipped while their pipeline builds: only draws into per-frame passes`, compare with previous fullscreen log. Preserve caches and working baseline, avoid simultaneous settings changes; investigate separately whether `PIPE_PREBUILD=1` for shader-warm first visit is safe before proposing it.
