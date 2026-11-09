@@ -188,3 +188,15 @@ The port is **still far below playable 30/60 FPS** and window/internal resolutio
 ### Before another reboot
 
 In a second PowerShell window during Test 10, capture `nx2navi.log` as `Desktop/NX2navi-12GB-RESULT.log`, count `MapPhysicalMemory.*failed 0x10801` and display last `frametime: 60 s:` and `vram.*MiB` lines. Then if game is stable, test `NX2NAVI_GAME_RES=1080` while **keeping 12 GiB guest pool fixed**, as an isolated GPU rendering-load A/B. Note that `GAME_RES` is the *Ocarina*-specific resolution setting, whereas `OUTPUT_RES` is explicitly ineffective in this title's build. Do not modify shaders or pipeline caches.
+
+## Test 10 later performance results: 12 GiB still hits guest memory limit (2026-11-08)
+
+The user has ~48 GiB of installed system RAM (prior runtime logs reported ~48,993 MiB). Using `NX2NAVI_APP_POOL=0x300000000` (12 GiB guest pool) with the working Baseline launcher produced the following consecutive 60s performance summaries: 42.2 FPS (2556 frames), then 9.1 (548), 9.4 (562), and 7.3 FPS (436). The full runtime log reports **587** occurrences of `MapPhysicalMemory.*failed 0x10801` across that whole session, so the 12-GiB guest pool has **not** eliminated guest pool exhaustion. Raw total failure counts are not directly comparable across runs of different durations.
+
+Hardware: Arc B570 has **10 GiB dedicated GDDR6 VRAM**, which is distinct from system RAM. The runtime's `memory=mirror` mode is valuable because without VRAM mirrors the GPU reads imported system-memory buffers over PCIe (upstream architecture documents as ~7 FPS in Kokiri Forest). **Do not** switch to `memory=import` merely to use more RAM; it is likely slower.
+
+### Test 11: 16 GiB pool only
+
+Try `NX2NAVI_APP_POOL=0x400000000` (16 GiB) as a single change, continuing `NX2NAVI_MOVIE_SKIP=1` and `-Test Baseline`. Keep `NX2NAVI_GAME_RES` at previous default for a controlled memory comparison. Record latest steady-gameplay FPS and 0x10801 count. This value is a *guest budget*, not an immediate 16-GiB physical memory allocation, but may let the game's memory requests use more host RAM. If process memory rises rapidly / commit pressure begins, exit and revert. Upstream source `runtime/memory.c` returns `R_LIMIT_REACHED=0x10801` when `new alias + existing alias + heap + image bytes > L.pool`; it does not test discrete GPU VRAM. This is an experiment, not a proven fix.
+
+If Test 11 still degrades to single-digit FPS, **keep the safer pool value** and try a separate single change `NX2NAVI_GAME_RES=1080` (Ocarina-specific) to reduce rendering load and VRAM pressure. Independently measure GPU dedicated/shared usage in Task Manager. Preserve the compiled game, save files and shader and pipeline caches.
