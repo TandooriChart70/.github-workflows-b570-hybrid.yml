@@ -231,3 +231,9 @@ try {
 ```
 
 After run, compare sustained FPS and count `0x10801` from the **same** session log. If aborted, restore pure 12 GiB with no `GAME_RES`. Avoid claiming that changing system RAM settings can increase the 10 GiB dedicated VRAM of the Intel B570.
+
+## First 1080p recording reviewed (2026-11-08 ~21:44 ET)
+
+A ~9-second video from the user after Test 12 (`NX2NAVI_APP_POOL=0x300000000`, `NX2NAVI_GAME_RES=1080`, movie skipping, Baseline) shows the game rendering Link and the forest correctly, without obvious flashing or a crash. However the in-game FPS overlay fluctuates around **2–6 FPS** in the recording, **not yet a sustained improvement** over the earlier 12-GiB, 1440p 7–9 FPS gameplay. The game is in a window beside a browser and terminal, with multiple log lines of window focus loss/gain; this can confound a foreground-FPS comparison. The visible terminal contains one `frametime: 60 s` line averaging **30.9 FPS**, but several very long frame-time spikes and repeated graphics pipeline waits in the same session.
+
+**Don't infer that 1080p definitively worsens or helps FPS from this short video.** Request the complete current-session runtime log to confirm `widescreen: picture ...` and last 5 `frametime: 60 s` windows, 0x10801 errors, and whether the game was in focus. If sustained foreground FPS remains single digit with no pipeline-translation activity, use the built-in sampling profiler `NX2NAVI_PROFILE` + `NX2NAVI_PROFILE_SLOW` rather than further guessing GPU settings. Preserve the working 12-GiB configuration/caches. Do not publish the user's recording.
