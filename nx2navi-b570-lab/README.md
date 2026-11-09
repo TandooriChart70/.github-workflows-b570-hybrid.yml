@@ -274,3 +274,22 @@ Avoid conflating the act of jumping with the visibility/load of the new region o
 Request the full new **unprofiled** game log immediately after the 2–3 FPS collapse (copy `.../game/logs/nx2navi.log` to Desktop before quitting). Then isolate the Overwolf hook: profile previously included `ow-graphics-vulkan.dll` and `ow-graphics-hook64.dll` inside game. After closing NX2navi, quit Overwolf and its apps entirely via system tray and Task Manager, then re-run exact same 12-GiB Baseline (no trace). Do not change shader caches, resolution, driver, or other config in this A/B. Compare initial and **post-drop sustained** FPS at same location. Keep 12-GiB as rollback baseline.
 
 If overhead-free Overwolf-free test still stalls, run `NX2NAVI_TRACE=perf` **without** `NX2NAVI_PROFILE` for GPU/CPU-bound and VRAM diagnostics from `runtime/perf.c` and gather last `perf: frame`, `bound:`, `mem: mirror frame`, `MapPhysicalMemory` lines. Avoid a second all-thread sampling profile for benchmarking.
+
+## After-jump log uploaded, 2.3 FPS sustained, VRAM pressure confirmed (Nov 8 ~22:05 ET)
+
+Complete `NX2navi-AFTER-JUMP.log` (754 lines) was provided. The 12-GiB APP_POOL baseline (without expensive sampling profiler) reproduced the same drop in four one-minute logs:
+
+- 1639 frames in 60.2s = **27.2 FPS** (early menus+gameplay),
+- 161 frames = **2.7 FPS**,
+- 147 frames = **2.4 FPS**,
+- 139 frames = **2.3 FPS**.
+
+**78 guest pool mapping LimitReached failures (0x10801)** in a contiguous burst around frames ~1450 and after heavy content load. Critically, **VRAM used 8,794 MiB vs budget 8,544 MiB** (from `mem: pool ... stays imported`, log lines 659–662). The mirror summary at frame 1800 reports 61 pools / 13.3 MiB which **could not be mirrored into fast local VRAM because of budget**, despite 586 other mirrors using 860.5 MiB. Imported buffers stay in system memory and can incur slower PCIe reads. The mirror telemetry at frame 1800 includes ~24.8 MiB upload/frame, ~13.9 MiB write-back/frame and 121 synchronizations/frame, showing active transfers but not by themselves proof of causation. ASTC cumulative decoded regions rise from 1,069 to >62,000 across gameplay, showing heavy texture activity/churn.
+
+**Persistent slow frames cannot be attributed to pipeline building**: examples frames 1970/1961/1952 take ~770–881ms with 0ms xlate, 0ms pipeline build, 0ms fence/present wait, only ~28–42ms replay. The unaccounted CPU interval may include guest core work, driver waits not represented by these fields or starvation. First minute worst frame 1466=3567ms, frame 1465=2812ms (0ms shader and pipeline); 1452=796ms 307ms texture upload/664ms replay. The window first lost focus after frame ~1700, AFTER the transition. VRAM memory pressure and guest memory limit errors are real, not definitively the cause of the CPU stall.
+
+Upstream `runtime/vk_headroom.c` already *drops* speculative VRAM reserve anchors at >=85% budget, so setting `NX2NAVI_VRAM_HEADROOM=0` is less promising than directly influencing texture eviction. `runtime/vk_texture.c` `sweep_pressure` reads `NX2NAVI_TEX_VRAM_PRESSURE` (default **90**). At >threshold, every 8 submits it evicts up to 32 oldest **released, recoverable** images, so earlier trigger (e.g. **75**) may reduce VRAM pressure/allocator churn but can increase redecoding and is NOT guaranteed.
+
+### Proposed Test 14: lower released-texture VRAM trigger (one-variable experiment)
+
+Maintain **APP_POOL=0x300000000 (12 GiB)**, MOVIE_SKIP=1 and Baseline runner without profiler or TRACE. Add **`NX2NAVI_TEX_VRAM_PRESSURE=75`** only. Start, verify log reports `vk: released textures under VRAM pressure: dropped above 75%`. At same scene jump, compare sustained post-jump FPS after 60-120s vs known **2.3 FPS**. Save log and count `0x10801`, check `stays imported`/VRAM budget. Avoid modifying shaders, code, INI or driver's state. If performance worsens, restore environment/default 90, no persistent change. If test remains ~2-3 FPS, isolate Overwolf Vulkan hook (present in previous profiler) **as next independent test** or use `NX2NAVI_TRACE=perf` (without full sampler) for accurate GPU-boundedness.
