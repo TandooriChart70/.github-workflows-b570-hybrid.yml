@@ -237,3 +237,20 @@ After run, compare sustained FPS and count `0x10801` from the **same** session l
 A ~9-second video from the user after Test 12 (`NX2NAVI_APP_POOL=0x300000000`, `NX2NAVI_GAME_RES=1080`, movie skipping, Baseline) shows the game rendering Link and the forest correctly, without obvious flashing or a crash. However the in-game FPS overlay fluctuates around **2–6 FPS** in the recording, **not yet a sustained improvement** over the earlier 12-GiB, 1440p 7–9 FPS gameplay. The game is in a window beside a browser and terminal, with multiple log lines of window focus loss/gain; this can confound a foreground-FPS comparison. The visible terminal contains one `frametime: 60 s` line averaging **30.9 FPS**, but several very long frame-time spikes and repeated graphics pipeline waits in the same session.
 
 **Don't infer that 1080p definitively worsens or helps FPS from this short video.** Request the complete current-session runtime log to confirm `widescreen: picture ...` and last 5 `frametime: 60 s` windows, 0x10801 errors, and whether the game was in focus. If sustained foreground FPS remains single digit with no pipeline-translation activity, use the built-in sampling profiler `NX2NAVI_PROFILE` + `NX2NAVI_PROFILE_SLOW` rather than further guessing GPU settings. Preserve the working 12-GiB configuration/caches. Do not publish the user's recording.
+
+## Resolution test verification: 1080p setting had no effect (Nov 8 ~21:49 ET)
+
+The user ran the 12-GiB pool + `NX2NAVI_GAME_RES=1080` test and reported the following from its live `nx2navi.log`:
+```
+[host] gfx: the game presents 2560x1440 images of format 37
+[host] vk: FSR upscales 2560x1440 to 3200x1800 (sharpness 80)
+Memory-limit failures: 137
+[host] frametime: 60 s: 2973 frames in 60.0 s, mean 49.5 fps, 1% low 10.2 fps
+```
+This **does not prove 1080p was activated**; the game is presenting the same 2560x1440 internal picture, upscaled to 3200x1800. A prior successful run logged `patches: wide_out off, wide_scene off ...` and no widescreen patch sets. Upstream `runtime/widescreen.c` requires `wide_out, wide_scene, wide_aspect, wide_hud, wide_movie` sets for `NX2NAVI_GAME_RES=1080` to actually change the output; absent sets means no resolution change. Thus this attempt was NOT a meaningful 1440p vs 1080p comparison.
+
+The 49.5 FPS 60-second window is not confirmed sustained gameplay (may include intro/menu), especially since the contemporaneous ~9-s video showed intermittent 2–6 FPS with multiple focus changes. 137 `0x10801` failures shows guest pool exhaustion persists at 12 GiB. These failure totals are duration dependent.
+
+**Next diagnostic**: Keep `APP_POOL=0x300000000` and existing Baseline settings, remove ineffective `GAME_RES`, and enable upstream instrumentation `NX2NAVI_TRACE=perf`, `NX2NAVI_PROFILE=<Desktop/unique-prof-path>`, `NX2NAVI_PROFILE_SLOW=300` or `500`. Source: `runtime/perf.c` prints per-60-present GPU busy, VRAM budget, CPU/GPU-bound diagnostics, while `runtime/prof_win.c` samples all Windows threads and writes slow-frame stack traces `<profile>.f<frame>` when a frame exceeds the specified ms threshold, as well as main profile at clean exit. Profiler overhead may affect FPS; use this as diagnosis, not benchmark. Keep a short run and zip the main profile, recent slow-frame traces and game log. Do not touch caches, executables or INI.
+
+**Important nuance**: `NX2NAVI_APP_POOL` changes guest-memory budget, not system RAM allocation, and no amount of host RAM turns into Arc B570's 10 GiB dedicated VRAM. Default memory=mirror uses VRAM buffers for speed; do not switch to import.
