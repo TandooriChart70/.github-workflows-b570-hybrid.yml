@@ -150,3 +150,31 @@ The log contains window-focus changes from 21:18:41 onward, **after** the severe
 Get the entire saved `NX2navi-JUMP-SLOWDOWN-20261108-212200.log` before another test. Search it for `perf: frame`, `bound:`, `kernel:`, `sched:`, memory activity and later frame-scheduling notices.
 
 If detailed logs do not explain the sustained stall, NX2navi already includes a Windows sampling profiler in `runtime/prof_win.c`: set `NX2NAVI_PROFILE=<absolute output path>`, `NX2NAVI_PROFILE_SLOW=1000` (capture stacks for frames slower than 1 second), `NX2NAVI_MOVIE_SKIP=1`, and `NX2NAVI_TRACE=perf` for one controlled repeat. The profiler adds overhead and may perturb timing. Limit the run and close normally so the main profile is written. The slow-frame dumps (`<profile>.f<frame>`) can reveal which threads are waiting. Do not touch shader caches or overwrite the previously successful log.
+
+## Analysis of uploaded complete jump-slowdown log: guest application pool limit (2026-11-08)
+
+The full 926-line `NX2navi-JUMP-SLOWDOWN-20261108-212200.log` shows the game started at 33.8 FPS, then fell to 1.6, 1.1 and 0.7 FPS without crashing. New evidence near the transition:
+
+- **242** `MapPhysicalMemory ... failed 0x10801` messages (lines 607–867), all in a burst following entrance into 3D gameplay. Error 0x10801 is `R_LIMIT_REACHED` (`LimitReached`), **not** a generic GPU allocation failure. `runtime/memory.c` `alias_map()` explicitly returns it if `new alias bytes + already mapped alias bytes + heap_size + image_bytes() > L.pool`. Source: https://github.com/tangerineturtle1/NX2navi/blob/main/runtime/memory.c
+- The retail Switch 2 game default application pool is 9,809 MiB. The last mapping failure's logged alias allocation ~2803 MiB plus heap 6910 MiB is already around 9713 MiB, without counting `image_bytes()`; the guest allocator appears to be approaching its configured pool limit. Raising the pool may allow memory mapping previously refused, but can also increase host memory use or change game behavior.
+- The renderer reports `7512 of 8164 MiB` of its VRAM budget occupied (lines 841–844); small buffer mirrors are therefore left in slower imported memory. This is a separate **host GPU budget**, not the same as the guest `APP_POOL` limit.
+- Window is `3200x1800`, internal game output `2560x1440`, FSR upscaling. The port supports *Ocarina*-specific `NX2NAVI_GAME_RES=1080`, unlike unsupported `OUTPUT_RES` and `RENDER_SCALE` in this game build. Using 1080 instead of 1440 reduces rendered pixels but is a **separate test**.
+- The run started with 1098 pipeline records not prebuilt and saw temporary large pipeline compilation stalls. This alone doesn't explain persistent later frames with zero translation and pipeline build.
+
+### Test 10: Increase the guest application pool, one variable only
+
+Use the existing proven Baseline diagnostic launcher, with the familiar one-second movie-skip and an additional **process-only** environment override (no INI modification, no cache deletion):
+
+```powershell
+$script = "$env:USERPROFILE\Downloads\NX2navi-B570-Compatibility-Lab\NX2navi-B570-Test.ps1"
+$env:NX2NAVI_MOVIE_SKIP = '1'
+$env:NX2NAVI_APP_POOL = '0x300000000' # 12 GiB; default 9809 MiB
+try {
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -Test Baseline
+} finally {
+    Remove-Item Env:NX2NAVI_APP_POOL -ErrorAction SilentlyContinue
+    Remove-Item Env:NX2NAVI_MOVIE_SKIP -ErrorAction SilentlyContinue
+}
+```
+
+Measure FPS before and after jumping, continue for ~1 minute to see if it recovers, then close the game normally. Confirm new logs lack the `MapPhysicalMemory ... failed 0x10801` storm; compare frametimes. If memory pressure or crashes worsen, exit; the process-scoped setting is gone after the test. Never change both `APP_POOL` and `GAME_RES` at the same time in the first A/B experiment. If Test 10 is inconclusive, Test 11 should change just `NX2NAVI_GAME_RES=1080` instead, to reduce framebuffer and VRAM demand. If the game still has 1–2-second frames with no pipeline work, use its `NX2NAVI_PROFILE_SLOW` thread profiler.
