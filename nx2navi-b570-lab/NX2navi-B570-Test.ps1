@@ -7,11 +7,18 @@ param(
     [string]$GameDir = "$env:LOCALAPPDATA\Programs\NX2navi\game"
 )
 $ErrorActionPreference = 'Stop'
-$exe = Join-Path $GameDir 'nx2navi.exe'
+# Official NX2navi launcher's built game is ocarina.exe; manual source builds
+# may instead use nx2navi.exe. Never select the NX2navi.exe launcher stub.
+$gameExeNames = @('ocarina.exe', 'nx2navi.exe')
+$exe = $null
+foreach ($name in $gameExeNames) {
+    $candidate = Join-Path $GameDir $name
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { $exe = $candidate; break }
+}
 $log = Join-Path $GameDir 'logs\nx2navi.log'
 $ini = Join-Path $GameDir 'nx2navi.ini'
-if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-    throw "No nx2navi.exe at $exe. Supply -GameDir with the path from the NX2navi launcher."
+if (-not $exe) {
+    throw "No built game executable (ocarina.exe or nx2navi.exe) found in $GameDir. Supply -GameDir with the path from the NX2navi launcher."
 }
 if (@(Get-Process -Name nx2navi -ErrorAction SilentlyContinue).Count -gt 0) {
     throw 'Close the running NX2navi game before starting this diagnostic.'
