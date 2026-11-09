@@ -39,3 +39,25 @@ If NX2navi was installed elsewhere, add `-GameDir 'D:\Path\To\game'`.
 ## Upstream license boundary
 
 NX2navi source is readable publicly, but its added code is all-rights-reserved and may not be redistributed without written permission. This branch contains **only original** testing scripts and explanations. See [upstream license](https://github.com/tangerineturtle1/NX2navi/blob/main/LICENSE-ADDITIONS).
+
+## Result: write-back merge did not fix the crash
+
+The 2026-11-08 `WritebackOff` test played both opening videos but exited 71 at the same `igvk64.dll+0x79ddf3` access violation. The log confirmed `mem: write-back merge off (NX2NAVI_WB_MERGE)`. This hypothesis is therefore not sufficient to fix the transition-to-3D crash.
+
+### Next targeted test: disable driver pipeline optimization
+
+The upstream renderer's `VK_NOOPT` switch applies `VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT` when creating Vulkan graphics pipelines. It was added specifically as an experiment for crashing driver shader compilers.
+
+To run the next test *without replaying the full opening movie*, set the game's supported movie skip setting in the **PowerShell parent process** and launch the existing script:
+
+```powershell
+$script = "$env:USERPROFILE\Downloads\NX2navi-B570-Compatibility-Lab\NX2navi-B570-Test.ps1"
+$env:NX2NAVI_MOVIE_SKIP = '1'
+try {
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -Test DriverNoOpt
+} finally {
+    Remove-Item Env:NX2NAVI_MOVIE_SKIP -ErrorAction SilentlyContinue
+}
+```
+
+`NX2NAVI_MOVIE_SKIP=1` tells the host movie decoder to produce its end marker after one second of samples; it is **not** the same as `NX2NAVI_MOVIES=off`, which causes this title to quit. Movie skipping changes the test workload, so if the game boots further, repeat without movie skipping to validate the result. Keep backups; do not delete the compiled game, shader pack or pipeline cache. The script saves a summary and full runtime log on the Desktop and does not send them anywhere.
