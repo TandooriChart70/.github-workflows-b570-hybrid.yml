@@ -61,3 +61,33 @@ try {
 ```
 
 `NX2NAVI_MOVIE_SKIP=1` tells the host movie decoder to produce its end marker after one second of samples; it is **not** the same as `NX2NAVI_MOVIES=off`, which causes this title to quit. Movie skipping changes the test workload, so if the game boots further, repeat without movie skipping to validate the result. Keep backups; do not delete the compiled game, shader pack or pipeline cache. The script saves a summary and full runtime log on the Desktop and does not send them anywhere.
+
+## Result: driver-no-opt did not fix the crash (2026-11-08 20:48 ET)
+
+`DriverNoOpt` with `NX2NAVI_MOVIE_SKIP=1` completed shortened intro clips, exited 71, and again reported `igvk64.dll+0x79ddf3` reading `0x190`. The script requested `NX2NAVI_VK_NOOPT=1`, but its short summary does not include the renderer's confirmation line. Verify `vk_pipeline: pipelines built without the driver's optimiser` in the full `nx2navi.log` before claiming the flag actually changed pipeline creation.
+
+### Next controlled experiment: descriptor-update templates
+
+The native renderer uses `vkCmdPushDescriptorSetWithTemplateKHR` / `vkUpdateDescriptorSetWithTemplate` when available. `NX2NAVI_DESC_TEMPLATE=0` forces plain descriptor write structures. A failure at the same Intel driver offset might involve driver-side descriptor handling, but we have no proof. Keep all other Test 4 settings the same, and avoid full intro playback with the movie-skip feature:
+
+```powershell
+$script = "$env:USERPROFILE\Downloads\NX2navi-B570-Compatibility-Lab\NX2navi-B570-Test.ps1"
+$env:NX2NAVI_MOVIE_SKIP = '1'
+try {
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -Test DescriptorFallback
+} finally {
+    Remove-Item Env:NX2NAVI_MOVIE_SKIP -ErrorAction SilentlyContinue
+}
+```
+
+To check actual settings and exact crash location, inspect the saved full log with:
+
+```powershell
+$latest = Get-ChildItem "$env:USERPROFILE\Desktop\NX2navi-B570-Results" -Directory |
+    Where-Object Name -Like '*-DescriptorFallback' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($latest) {
+    Select-String -Path (Join-Path $latest.FullName 'nx2navi.log') -Pattern 'descriptor update templates|FATAL:|igvk64.dll|cfg: read'
+}
+```
+
+Do **not** delete the main game pipeline cache or the pretranslated shader pack. If the same crash repeats, stop tuning random switches and use Vulkan validation / crash captures with the upstream developers.
