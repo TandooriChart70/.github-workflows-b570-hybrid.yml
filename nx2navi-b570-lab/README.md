@@ -101,3 +101,20 @@ Do **not** delete the main game pipeline cache or the pretranslated shader pack.
 The native renderer supports `NX2NAVI_VK_VALIDATION=1`, **if** the installed Vulkan loader can find `VK_LAYER_KHRONOS_validation`. The source logs an explicit warning and continues without validation otherwise. Unlike a random gameplay setting, this can reveal an invalid Vulkan API usage preceding the driver fault. Validation substantially slows the game; skip the movies when capturing the crash. Run the existing local launcher with `-Test Baseline` and set both `NX2NAVI_VK_VALIDATION=1` and `NX2NAVI_MOVIE_SKIP=1` only in the parent process. After the run inspect the saved complete `nx2navi.log` for `vk validation error`, `vk validation warning`, and `validation set but`. Don't claim validation ran if the layer was missing.
 
 A matching crash is independently reported in another native PC recompilation on Intel Arc B580 with driver 101.9150: https://github.com/valentderah/totk-pc-recomp/issues/774. This suggests a common path, but does **not** prove the issue is only inside Intel's driver; invalid API use can also crash drivers.
+
+## Major breakthrough: first playable Arc B570 native gameplay (2026-11-08 ~21:05 EST)
+
+With the Test 4 baseline, `NX2NAVI_VK_VALIDATION=1` and `NX2NAVI_MOVIE_SKIP=1` set in the parent PowerShell environment, the user reports **no crash** and **no flickering** after the intro, with playable Link movement. A 33-second user-provided recording visually confirms a rendered environment, Link moving, terrain, buildings, vegetation, and lighting. Performance remains uneven. The recording is private and is **not** committed to the repository.
+
+**Causality NOT proven.** The runtime log confirming whether `VK_LAYER_KHRONOS_validation` actually loaded has not been supplied. A missing layer makes the renderer continue without validation. The result could also be affected by cache warming, movie skipping, timing or an intermittent issue. Don't assume this is a stable fix until repeated on a second run and verified with logs.
+
+### Preserve and verify
+
+While the game still runs, open a second PowerShell window:
+
+```powershell
+$log = "$env:LOCALAPPDATA\Programs\NX2navi\game\logs\nx2navi.log"
+Select-String -Path $log -Pattern 'validation|frametime:|vk: using gpu|FATAL:' | Select-Object -Last 35
+```
+
+If the full log includes `NX2NAVI_VK_VALIDATION set but VK_LAYER_KHRONOS_validation is not installed`, validation did not run. If it includes `vk validation warning` or `vk validation error`, save the context. An absence of errors does not alone prove the layer was enabled—see complete initialization lines. Save the whole log immediately after the successful session, along with the launch arguments. For performance, first enable the in-game F10 FPS overlay and measure steady-gameplay and worst frame times; validation can impose a large CPU overhead. Reduce game resolution from 1440p to 1080p only as a separate, recorded next test; avoid simultaneously changing other settings.
