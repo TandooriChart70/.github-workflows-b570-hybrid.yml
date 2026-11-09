@@ -178,3 +178,13 @@ try {
 ```
 
 Measure FPS before and after jumping, continue for ~1 minute to see if it recovers, then close the game normally. Confirm new logs lack the `MapPhysicalMemory ... failed 0x10801` storm; compare frametimes. If memory pressure or crashes worsen, exit; the process-scoped setting is gone after the test. Never change both `APP_POOL` and `GAME_RES` at the same time in the first A/B experiment. If Test 10 is inconclusive, Test 11 should change just `NX2NAVI_GAME_RES=1080` instead, to reduce framebuffer and VRAM demand. If the game still has 1–2-second frames with no pipeline work, use its `NX2NAVI_PROFILE_SLOW` thread profiler.
+
+## Test 10 preliminary outcome: raised guest pool is a major improvement (2026-11-08 ~21:31 ET)
+
+User reports native gameplay is **much smoother** using `NX2NAVI_APP_POOL=0x300000000` (12 GiB) alongside the existing Baseline launch script and `NX2NAVI_MOVIE_SKIP=1`. Their attached ~25-second gameplay capture shows Link running and jumping outdoors with rendered terrain, foliage and scenery, no obvious white flashing, and an onscreen overlay generally showing **8–11 FPS**. That compares favorably to the prior post-jump sustained 0.7–1.6 FPS, although capture conditions and different scene complexity mean this is a qualitative performance improvement rather than an exact matched benchmark. The video is private; do not commit it. Do **not** claim the guest-memory increase is the sole cause until runtime log verifies no `0x10801` mapping failures and test repeats.
+
+The port is **still far below playable 30/60 FPS** and window/internal resolution and VRAM pressure may remain substantial.
+
+### Before another reboot
+
+In a second PowerShell window during Test 10, capture `nx2navi.log` as `Desktop/NX2navi-12GB-RESULT.log`, count `MapPhysicalMemory.*failed 0x10801` and display last `frametime: 60 s:` and `vram.*MiB` lines. Then if game is stable, test `NX2NAVI_GAME_RES=1080` while **keeping 12 GiB guest pool fixed**, as an isolated GPU rendering-load A/B. Note that `GAME_RES` is the *Ocarina*-specific resolution setting, whereas `OUTPUT_RES` is explicitly ineffective in this title's build. Do not modify shaders or pipeline caches.
